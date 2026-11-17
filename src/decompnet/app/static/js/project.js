@@ -312,6 +312,8 @@ function linkedText(ov) {
 }
 
 function renderStats(ov) {
+  $("verifyAssembly").hidden = !ov.can_verify_assembly;
+  $("verifyAssembly").title = `${ov.verified_assembly || 0} verified functions, ${bytes(ov.verified_assembly_bytes || 0)}. Compare complete routines with the pinned SDK sources.`;
   renderHeader(ov);
   // the sidebar's line for this project follows the header now, not 5 s later (they disagreed after each match)
   const mine = (S.projects || []).find((p) => p.slug === ov.slug);

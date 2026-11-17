@@ -133,7 +133,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             next((e for e in settings.endpoints() if e["base_url"] == options.get("base_url")), None))
         if saved is None and options.get("endpoint"):
             return None
-        now = options | (session_options(saved) if saved is not None else {})
+        now = options | (session_options(saved, effort=options.get("effort")) if saved is not None else {})
         if options.get("picked_model"):
             now["model"] = str(options["picked_model"])
         return now

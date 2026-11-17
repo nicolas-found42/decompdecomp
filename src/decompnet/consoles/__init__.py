@@ -624,6 +624,8 @@ class Console:
         reg = toolchains.registry()
         return [c.id for c in self.compilers if c.id in reg and reg[c.id].supported]
 
+    verify_assembly = None  # consoles with reproducible SDK assembly provide the verifier
+
     def project_facts(self) -> dict:
         """What a project's page and its line in the project list say about its console."""
         return {"platform": self.id, "platform_name": self.name, "platform_short": self.short or self.name,

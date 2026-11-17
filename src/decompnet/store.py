@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS twin_misses(
 
 # Columns added after the first release; applied in place to existing databases.
 MIGRATIONS = [
+    ("functions", "asm_verification", "TEXT"),  # exact assembled bytes and pinned source provenance
     ("agents", "trusted", "INTEGER NOT NULL DEFAULT 0"),      # operator-vetted (CLI) vs. self-registered
     ("agents", "origin", "TEXT"),                              # cli | web
     ("agents", "terms_accepted_at", "REAL"),                   # evidence of accepting the terms
@@ -157,6 +158,12 @@ END;
 # Created after the migrations above: they name columns older databases get from MIGRATIONS. A trigger only marks what
 # a progress folder's render actually reads (saves._render), so work that stays in the database costs nothing.
 DIRTY_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS invalidate_assembly_receipt AFTER UPDATE OF status,target,size,relocs,vram,rom_offset ON functions
+WHEN OLD.asm_verification IS NOT NULL AND (NEW.status!='asm' OR NEW.target IS NOT OLD.target OR NEW.size IS NOT OLD.size
+  OR NEW.relocs IS NOT OLD.relocs OR NEW.vram IS NOT OLD.vram OR NEW.rom_offset IS NOT OLD.rom_offset)
+BEGIN
+  UPDATE functions SET asm_verification=NULL WHERE id=NEW.id;
+END;
 CREATE TRIGGER IF NOT EXISTS progress_dirty_functions_insert AFTER INSERT ON functions
 WHEN EXISTS (SELECT 1 FROM projects WHERE id=NEW.project_id AND CASE WHEN json_valid(config) THEN json_extract(config,'$.kind') END='rom')
 BEGIN
@@ -290,6 +297,8 @@ class Store:
                 FROM measured GROUP BY function_id
             ) UPDATE functions SET last_checked=recency.checked,last_improved=recency.improved
               FROM recency WHERE functions.id=recency.function_id""")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_verified_assembly ON functions(project_id,size,status,asm_verification) "
+                          "WHERE status='asm' AND asm_verification IS NOT NULL")
         self.conn.executescript(DIRTY_TRIGGERS)
         self.conn.executescript(TALLY_TRIGGERS)
         self.conn.executescript(MARK_TRIGGERS)

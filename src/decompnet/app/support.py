@@ -316,10 +316,12 @@ class Settings:
                 "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
 
 
-def session_options(entry: dict) -> dict:
+def session_options(entry: dict, *, effort: str | None = None) -> dict:
     """What a built-in agent session needs from its endpoint."""
     out = {"endpoint": entry.get("id") or "", "provider": entry["provider"], "base_url": entry["base_url"],
            "model": entry["model"], "provider_name": entry["name"]}
+    if effort or entry.get("reasoning_effort"):
+        out["effort"] = effort or entry["reasoning_effort"]
     return out | {k: entry[k] for k in ("api_key", "context_tokens") if entry.get(k)}
 
 

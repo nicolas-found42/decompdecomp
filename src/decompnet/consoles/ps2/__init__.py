@@ -40,6 +40,10 @@ class PlayStation2(Console):
         Compiler("ee-gcc-2.96", "EE-GCC 2.96", "PlayStation 2 games (Sony's EE GCC)", guess="EEGCC"),
         Compiler("ee-gcc-2.9-991111", "EE-GCC 2.9", "launch-era PlayStation 2 games (the first SDK's GCC)",
                  guess="EEGCC-2.9"),
+        Compiler("ee-gcc-2.9-991111-01", "EE-GCC 2.9 (991111-01)", "SDK timer code with divide padding"),
+        Compiler("ee-gcc-2.9-as296", "EE-GCC 2.9 / 2.96 assembler", "SDK code using later delay-slot scheduling"),
+        Compiler("ee-gcc-3.2-040921", "EE-GCC 3.2 (040921 SDK driver)", "late SDK compiler with its own driver flags"),
+        Compiler("ee-gcc-2.96-as2004", "EE-GCC 2.96 / 2004 assembler", "SDK unaligned load/store expansion"),
         Compiler("ee-gcc-2.95.2", "EE-GCC 2.95.2 (SN)", "PlayStation 2 games built with SN Systems' ProDG",
                  guess="EEGCC-2.95.2"),
         Compiler("ee-gcc-2.95.3", "EE-GCC 2.95.3 (SN)", "later PlayStation 2 games built with SN Systems' ProDG",
@@ -210,6 +214,10 @@ class PlayStation2(Console):
             with net.store.tx() as db:
                 net._event(db, proj["id"], None, "analysis", "the program's symbols name its compilers: "
                            + "; ".join(said))
+
+    def verify_assembly(self, net, proj, log=print, *, saved=None):
+        from . import ps2sdk
+        return ps2sdk.verify(net, proj, log, saved=saved)
 
     def asm_reason(self, code: bytes) -> str | None:
         return mips.asm_reason(code, False, eabi=True, cop2="VU0")

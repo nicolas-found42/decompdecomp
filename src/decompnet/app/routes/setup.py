@@ -187,7 +187,7 @@ def register(app: App) -> None:
                     ids = []
                     for eid, model in choices:
                         entry = entries[eid]
-                        ids.extend(manager.start(kind, slug, count, options | session_options(entry) | {
+                        ids.extend(manager.start(kind, slug, count, options | session_options(entry, effort=options.get("effort")) | {
                             "model": model, "picked_model": model}))
                     picked = list(dict.fromkeys(eid for eid, _ in choices))
                 else:
@@ -195,7 +195,7 @@ def register(app: App) -> None:
                     plan = spread_sessions(settings, manager, picked, count, given)
                     ids = []
                     for entry, n in plan:
-                        entry_options = options | session_options(entry)
+                        entry_options = options | session_options(entry, effort=options.get("effort"))
                         if given.get("model"):
                             chosen = str(given["model"])
                             entry_options["model"] = chosen

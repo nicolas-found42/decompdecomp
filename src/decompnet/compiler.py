@@ -51,11 +51,14 @@ _FORBIDDEN = [
 _INCLUDE = re.compile(r'#\s*include\s*"([^"]+)"')
 
 
+_GCC_INTERFACE = re.compile(r"^[ \t]*#[ \t]*pragma[ \t]+interface[ \t]*$", re.M)
+
+
 class SourceRejected(ValueError):
     pass
 
 
-def check_source(source: str) -> None:
+def check_source(source: str, *, allow_gcc_interface: bool = False) -> None:
     """Refuse C that could match without being C (inline asm, asm-include macros, pragmas) or reach outside the
     sandbox (absolute or `..` includes): what the judge accepts must come from a compiler."""
     if len(source.encode()) > MAX_SOURCE_BYTES:
@@ -63,6 +66,10 @@ def check_source(source: str) -> None:
     for inc in _INCLUDE.findall(source):
         if inc.startswith("/") or ".." in inc.split("/"):
             raise SourceRejected(f"include path not allowed: {inc}")
+    if allow_gcc_interface:
+        # Match the entire logical line before masking strings. Header arguments stay forbidden.
+        source = source.replace("\r\n", "\n").replace("\r", "\n").replace("\\\n", "")
+        source = _GCC_INTERFACE.sub("", source)
     code = _COMMENTS_AND_STRINGS.sub(" ", source)
     for pattern, why in _FORBIDDEN:
         if pattern.search(code):
@@ -80,6 +87,7 @@ class CompilerConfig:
     wsl: bool = False  # a Linux toolchain on Windows: runs inside WSL 2, `cmd` holds WSL paths (see wsl.py)
     prelude: str = ""  # the toolchain's prelude (Toolchain.prelude)
     cplusplus: bool = False  # it compiles C++ too: what doesn't compile as C is tried as C++ (Toolchain.cplusplus)
+    allow_gcc_interface: bool = False
     linux_vm: bool = False  # isolated local macOS Linux compiler jobs
 
 
@@ -210,7 +218,7 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
     both."""
     if not trusted:
         try:
-            check_source(source)
+            check_source(source, allow_gcc_interface=cfg.allow_gcc_interface)
         except SourceRejected as e:
             return CompileResult(False, None, f"rejected: {e}")
 

@@ -91,6 +91,7 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
         runtime32=runtime32,
         wsl=linux,
         linux_vm=vm,
+        allow_gcc_interface=(c.get("toolchain") == "ee-gcc-2.96" and "-xc++" in flags and not c.get("cmd")),
         prelude=prelude,
         cplusplus=cplusplus,
     )

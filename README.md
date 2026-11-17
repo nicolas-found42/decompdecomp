@@ -89,7 +89,7 @@ On Apple Silicon, install Rosetta before setup:
 softwareupdate --install-rosetta
 ```
 
-For PS2 Sony EE-GCC, run `brew install colima docker`, then choose **Prepare Linux runner** in Compilers & tools ([setup](docs/linux-compiler-vm.md)).
+On Apple Silicon, [the iSH runner](docs/linux-compiler-vm.md#run-sony-ee-gcc-directly-on-apple-silicon) runs Sony EE-GCC directly under macOS. For the optional VM runner, run `brew install colima docker`, then choose **Prepare Linux runner** in Compilers & tools ([setup](docs/linux-compiler-vm.md)).
 Linux-only PS1 compilers need a Linux computer. Xcode Command Line Tools (`xcode-select --install`) are needed for some Mac tools.
 
 ## Start

@@ -44,6 +44,18 @@ def test_check_source_blocks_cheats():
     check_source('// this used to be asm\nint f(void) { const char *s = "asm"; return 0; }')
 
 
+def test_gcc_interface_pragma_requires_opt_in_and_no_arguments():
+    source = '#pragma interface\r\nclass A;\n  # pragma interface\t\n'
+    with pytest.raises(SourceRejected, match="pragmas"):
+        check_source(source)
+    check_source(source, allow_gcc_interface=True)
+    for disallowed in ('#pragma interface "new"', '#pragma interface <exception>', '#pragma interface ARG',
+                       '#pragma interface \\\n"typeinfo"', '#pragma implementation', '_Pragma("interface")',
+                       '#pragma interface\n#pragma pack(1)', '#pragma interface\nasm("nop");'):
+        with pytest.raises(SourceRejected):
+            check_source(disallowed, allow_gcc_interface=True)
+
+
 def test_every_solution_matches(net, agents):
     alice, _ = agents
     for name, src in SOLUTIONS.items():

@@ -101,3 +101,12 @@ def test_sessions_are_numbered_per_endpoint(tmp_path, monkeypatch):
     ("https://8.8.8.8/v1", False)])
 def test_local_servers_are_recognised_by_address_or_name(base, local):
     assert api.is_local(base, resolve=False) is local
+
+
+def test_copied_endpoint_keeps_its_reasoning_effort_and_accepts_a_session_override(tmp_path):
+    from decompnet.agents.api import endpoint_entry
+    from decompnet.app.support import session_options
+
+    endpoint = endpoint_entry({"base_url": "https://example.test/v1", "model": "m", "reasoning_effort": "high"})
+    assert session_options(endpoint)["effort"] == "high"
+    assert session_options(endpoint, effort="low")["effort"] == "low"

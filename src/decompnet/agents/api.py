@@ -14,9 +14,11 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 
 import httpx
 
+from .. import __version__
 from . import Agent, args_brief, number
 
 API_PRESETS = {
@@ -92,6 +94,9 @@ class Api(Agent):
         if not base or not model:
             raise RuntimeError("set the API address and model first")
         headers = {"Content-Type": "application/json"}
+        if httpx.URL(base).host == "opencode.ai":
+            headers["User-Agent"] = f"decompdecomp/{__version__}"
+            headers["x-opencode-session"] = uuid.uuid4().hex
         if s.options.get("api_key"):
             headers["Authorization"] = f"Bearer {s.options['api_key']}"
         schema = api_tool_schemas(fork=bool(net.fork_slug(s.slug)), names=tools.project_tools(net, s.slug, agent))
@@ -197,7 +202,7 @@ def endpoint_entry(e: dict) -> dict:
     out = {"id": str(e.get("id") or ""), "provider": provider, "base_url": base,
            "model": (e.get("model") or preset["model"]).strip(),
            "name": (e.get("name") or "").strip() or (host if moved and host else preset["name"]) or "API"}
-    for k in ("api_key", "context_tokens", "max_sessions"):
+    for k in ("api_key", "context_tokens", "max_sessions", "reasoning_effort"):
         if e.get(k):
             out[k] = e[k]
     return out

@@ -1222,6 +1222,15 @@ def test_polishing_started_before_a_pull_cannot_replace_the_contribution(project
     assert net._function("f", "game")["matched_source"] == "good PR"
 
 
+def test_period_gcc_linker_names_survive_progress_sync(project):
+    net, folder, _ = project
+    symbol = {"name": "_$_8bad_cast", "address": 4, "size": 1, "kind": "func"}
+    manifest(folder, symbols=[symbol])
+    net.progress.sync("game", force=True)
+    saved = json.loads((folder / saves.MANIFEST).read_text())
+    assert any(entry["name"] == symbol["name"] for entry in saved["symbols"])
+
+
 def test_a_rejected_manifest_says_which_part_it_rejected(project):
     """#158: one sentence for every reason left a user with a large manifest nowhere to look."""
     net, folder, _ = project

@@ -222,6 +222,13 @@ def register(app: App) -> None:
             pass  # not yours (any more): nothing to give back
         return {"ok": True}
 
+    def p_verify_assembly(slug, request, data):
+        proj = net.project_row(slug)
+        verify = net.console(proj).verify_assembly
+        if not verify or not net.is_rom(proj) or slug in net.rooms or slug in net.links:
+            raise NetworkError("Choose a standalone ROM project with an SDK assembly verifier.")
+        return {"job": jobs.start("Verify SDK assembly", lambda log: verify(net, proj, log))}
+
     def p_recheck(slug, request, data):
         """Check again: the project looked at with what this version knows (Core.recheck), in the background."""
         return {"job": jobs.start("recheck", lambda log: {
@@ -354,6 +361,7 @@ def register(app: App) -> None:
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]),
+        "/api/verify-assembly": (p_verify_assembly, ["POST"]),
         "/api/recheck": (p_recheck, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/deep-permuter": (p_deep_permuter, ["GET", "POST"]),

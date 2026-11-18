@@ -316,7 +316,7 @@ def test_the_counts_marks_follow_meta_and_come_to_an_older_database_once(tmp_pat
                              "DROP INDEX idx_functions_tally; DROP INDEX idx_functions_map; "
                              "ALTER TABLE functions DROP COLUMN aside_mark; "
                              "ALTER TABLE functions DROP COLUMN gone_mark")
-    store.conn.close()
+    store.close()
     assert marks(Store(tmp_path / "app.db")) == {"lib": ("the C runtime", None), "own": (None, "1"), "odd": (None, None)}
 
 

@@ -98,10 +98,12 @@ Type `decomp`, or open decompdecomp from your apps menu. It opens in its own win
 1. **Open a game.** Pick a ROM, a disc image or a program file of a game that you own. To try the app first, open Demo Quest 64. For an N64, PlayStation or
    PlayStation 2 game, the app offers to install that console's compilers first. Tick the box only if you accept the proprietary ones.
 2. **Start helper agents.** Click **Start agents**. Choose any API model (DeepSeek, OpenRouter, OpenAI, or a local model), or a CLI helper agent: Claude Code,
-   Codex, Cursor Agent, Kimi Code, opencode, Antigravity CLI, ZCode CLI or Oh My Pi. Run several; they work on different functions at the same time.
+   Codex, Cursor Agent, Kimi Code, opencode, Antigravity CLI, ZCode CLI, Oh My Pi or Muse Code. Run several; they work on different functions at the same time.
+   Muse Code uses the subscription from its native Meta browser sign-in and offers Muse Ember and Muse Wonder.
 3. **Watch the map.** Each square is a function and turns green when it matches. The autopilot matches the easy functions at no cost before any helper agent
-   starts. For a difficult function with saved C, open its **Deep permuter** tab. Give a time and variant limit. It
-   tries local rewrites with the same compiler and byte check, saves each better result, and uses no AI tokens.
+   starts. For a difficult function with saved C, open its **Deep permuter** tab, set a time and variant limit, and
+   click **Start search**. Deep permuter starts on your request and saves improvements verified by the project's judge.
+   On machines with 12 compiler slots, ROM projects use up to 10 workers for one Deep permuter search at a time.
 4. **Export.** Use **Export** in the project header. You get a decomp project that builds your game again, byte for byte.
 
 No whole game has been decompiled yet. The export uses matched C and assembly for the rest, so it still builds the game.

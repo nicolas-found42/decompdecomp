@@ -14,7 +14,8 @@ function el(id) {
 }
 const ctx = vm.createContext({
   console, Map, Set, Date, Math, Number, String,
-  $:el, S:{slug:'game',fn:'f',fnDetail:{name:'f',status:'open',source:'int f() {}',best:4000,insns:100}},
+  $:el, S:{slug:'game',fn:'f',st:{deep_permuter_high_performance:true},ov:{platform:'ps2',rom:{}},
+           fnDetail:{name:'f',status:'open',source:'int f() {}',best:4000,insns:100}},
   pctOf:(score,insns)=>Math.max(0,1-score/(insns*100)),
   document:{querySelectorAll:()=>[]},
   showFnTab:(tab)=>{ctx.tab=tab;}, renderFnChart:()=>{},
@@ -25,6 +26,8 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/decompnet/app/static
 ctx.renderDeepSearch();
 assert.equal(el('deepResults').hidden,true);
 assert.equal(el('deepStart').disabled,false);
+const index=fs.readFileSync(path.join(__dirname,'../src/decompnet/app/static/index.html'),'utf8');
+assert.doesNotMatch(index,/deepModeField|deepHighPerformance/);
 vm.runInContext(`deepRuns.set('game/f',{state:'running',progress:{starting_score:4000,best_score:2500,tested:20,variant_limit:100,elapsed:65,seconds_left:30,history:[{tested:0,score:4000},{tested:20,score:2500}]},log:['one']});`,ctx);
 ctx.renderDeepSearch();
 assert.equal(el('deepStarting').textContent,'60.00%');
@@ -49,5 +52,23 @@ assert.equal(el('deepResults').hidden,true);
 (async()=>{
   await ctx.followDeepSearch('old-job','game','f');
   assert.equal(el('deepResults').hidden,true,'An old function finishing must not show its results on a different function');
+  ctx.followJob=()=>new Promise(()=>{});
+  for (const [name, overview, available, expected] of [
+    ['rom',{platform:'ps2',rom:{}},true,true],
+    ['xbox',{kind:'fork',platform:'xbox',rom:{title:'Test game'}},true,false],
+    ['nds',{kind:'fork',platform:'nds',rom:{title:'Test game'}},true,false],
+    ['smaller-host',{platform:'ps2',rom:{}},false,false],
+  ]) {
+    ctx.S.fn=name;
+    ctx.S.fnDetail={...ctx.S.fnDetail,name};
+    ctx.S.ov=overview;
+    ctx.S.st.deep_permuter_high_performance=available;
+    let body;
+    ctx.api=async (url,options)=>{ assert.equal(url,'/api/deep-permuter'); body=options.body; return {job:name}; };
+    ctx.renderDeepSearch();
+    assert.equal(body,undefined);
+    await el('deepStart').onclick();
+    assert.equal(body.high_performance,expected);
+  }
   console.log('Deep permuter states and navigation pass.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

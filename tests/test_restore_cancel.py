@@ -66,20 +66,20 @@ def test_restore_import_uses_the_same_cancellation_scope_as_judging(tmp_path, mo
 
 
 def test_cancellation_does_not_wait_for_a_free_compiler_slot(tmp_path, monkeypatch):
-    class Busy:
-        def acquire(self, timeout):
-            return False
-
-        def release(self):
-            pytest.fail("released another job's slot")
-
-    monkeypatch.setattr(compiler, "_SLOTS", Busy())
+    monkeypatch.setattr(compiler, "_SLOTS", compiler.CompilerQueue(1))
+    checks = 0
 
     def cancel():
-        raise RuntimeError("cancelled while waiting")
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            raise RuntimeError("cancelled while waiting")
 
-    with compiler.cancellable(cancel), pytest.raises(RuntimeError, match="cancelled while waiting"):
-        compiler.compile_source(compiler.CompilerConfig(["unused"], sandbox="none"), "", "void f(void) {}")
+    with compiler.compiler_slots(), compiler.cancellable(cancel):
+        with pytest.raises(RuntimeError, match="cancelled while waiting"):
+            compiler.compile_source(compiler.CompilerConfig(["unused"], sandbox="none"), "", "void f(void) {}")
+    with compiler.compiler_slots():
+        pass  # the cancelled waiter left the queue and did not release the other job's slot
 
 
 def test_wsl_cancellation_signals_linux_before_removing_its_script(tmp_path, monkeypatch):

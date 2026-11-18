@@ -166,6 +166,9 @@ class PE:
     x64: bool = False  # a 64-bit program (PE32+): x64 code, 8-byte pointers, .pdata
     directories: int = 0  # where its optional header's data directories start, in the file
 
+    # Display identity is separate from the COFF-safe symbol used by delinking and matching.
+    import_identities: dict[int, tuple[str, str | int]] = field(default_factory=dict)
+
     def directory(self, number: int) -> tuple[int, int]:
         """(address relative to the image base, size) of one of its data directories (EXPORTS, IMPORTS...)."""
         return struct.unpack_from("<II", self.data, self.directories + DIRECTORY_BYTES * number) \
@@ -181,6 +184,14 @@ class PE:
     def read(self, addr: int, n: int) -> bytes:
         off = self.offset(addr)
         return b"" if off is None else self.data[off:off + n]
+
+    def mapped_bytes(self, addr: int, length: int) -> bytes:
+        """Read only file-backed bytes in the same mapped section, excluding alignment padding."""
+        section = self.section_at(addr)
+        if section is None:
+            return b""
+        remaining = section.loaded_size - (addr - section.va)
+        return self.read(addr, min(length, remaining)) if remaining > 0 else b""
 
     def contains(self, addr: int) -> bool:
         return self.image_base <= addr < self.image_base + self.image_size
@@ -294,31 +305,42 @@ def read_pe(data: bytes) -> PE:
 
 def _imports(pe: PE) -> dict[int, str]:
     """Import address table slot -> the function's name (or DLL ordinal), from the import directory."""
-    rva = pe.directory(IMPORTS)[0]
+    rva, table_size = pe.directory(IMPORTS)
     out: dict[int, str] = {}
     if not rva:
         return out
     width, form, ordinal = (8, "<Q", BY_ORDINAL_64) if pe.x64 else (4, "<I", BY_ORDINAL)
     at = pe.image_base + rva
-    for _ in range(MAX_IMPORT_DLLS):
-        desc = pe.read(at, IMPORT_DESCRIPTOR_BYTES)
+    for _ in range(min(MAX_IMPORT_DLLS, table_size // IMPORT_DESCRIPTOR_BYTES) if table_size else MAX_IMPORT_DLLS):
+        desc = pe.mapped_bytes(at, IMPORT_DESCRIPTOR_BYTES)
         if len(desc) < IMPORT_DESCRIPTOR_BYTES or desc == bytes(IMPORT_DESCRIPTOR_BYTES):
             break
         lookup, _, _, name_rva, iat = struct.unpack("<IIIII", desc)
-        dll = pe.read(pe.image_base + name_rva, DLL_NAME_BYTES).split(b"\0", 1)[0].decode("latin-1")
+        raw_dll = pe.mapped_bytes(pe.image_base + name_rva, DLL_NAME_BYTES)
+        dll = raw_dll.split(b"\0", 1)[0].decode("latin-1")
         pe.dlls.append(dll)
         lookup = lookup or iat
         for k in range(MAX_IMPORTS_PER_DLL):
-            entry = pe.read(pe.image_base + lookup + width * k, width)
+            entry = pe.mapped_bytes(pe.image_base + lookup + width * k, width)
             if len(entry) < width or not struct.unpack(form, entry)[0]:
                 break
             value = struct.unpack(form, entry)[0]
+            slot = pe.image_base + iat + width * k
+            identity = None
             if value & ordinal:
                 name = f"{Path(dll).stem}_{value & ORDINAL_BITS}"
+                if not value & ~(ordinal | ORDINAL_BITS):
+                    identity = value & ORDINAL_BITS
             else:
                 address = pe.image_base + (value & 0x7FFFFFFF) + IMPORT_HINT_BYTES
-                name = pe.read(address, IMPORT_NAME_BYTES).split(b"\0", 1)[0].decode("latin-1")
-            out[pe.image_base + iat + width * k] = name if _IDENT.fullmatch(name) else f"{Path(dll).stem}_{k}"
+                raw = pe.mapped_bytes(address, IMPORT_NAME_BYTES)
+                name = raw.split(b"\0", 1)[0].decode("latin-1")
+                if name and value <= 0x7fffffff and b"\0" in raw and name.isascii() and name.isprintable():
+                    identity = name
+            if identity is not None and dll and dll.isascii() and dll.isprintable() and b"\0" in raw_dll and \
+                    len(pe.mapped_bytes(slot, width)) == width:
+                pe.import_identities[slot] = (dll, identity)
+            out[slot] = name if _IDENT.fullmatch(name) else f"{Path(dll).stem}_{k}"
         at += IMPORT_DESCRIPTOR_BYTES
     return out
 
@@ -1651,15 +1673,19 @@ def _relocations_x64(md, pe: PE, start: int, code_end: int, end: int, entries: l
     return sorted(relocs)
 
 
-def import_thunk(pe: PE, addr: int) -> str | None:
-    """The import an import thunk at `addr` jumps to (`jmp dword ptr [__imp__Name]`, or on x64 `jmp qword ptr [rip +
-    __imp_Name]`: "RtlUnwind"), or None."""
-    code = pe.read(addr, THUNK_BYTES)
+def import_thunk_slot(pe: PE, addr: int) -> int | None:
+    """Address of the slot in an x86 absolute or x64 RIP-relative import jump. Callers check it against the IAT."""
+    code = pe.mapped_bytes(addr, THUNK_BYTES)
     if len(code) < THUNK_BYTES or code[:len(IMPORT_JUMP)] != IMPORT_JUMP:
         return None
     if pe.x64:
-        return pe.imports.get(addr + THUNK_BYTES + struct.unpack_from("<i", code, len(IMPORT_JUMP))[0])
-    return pe.imports.get(struct.unpack_from("<I", code, len(IMPORT_JUMP))[0])
+        return addr + THUNK_BYTES + struct.unpack_from("<i", code, len(IMPORT_JUMP))[0]
+    return struct.unpack_from("<I", code, len(IMPORT_JUMP))[0]
+
+
+def import_thunk(pe: PE, addr: int) -> str | None:
+    slot = import_thunk_slot(pe, addr)
+    return pe.imports.get(slot) if slot is not None else None
 
 
 def _thunk_symbol(name: str, row: dict | None = None, pe: PE | None = None) -> str:
@@ -2700,21 +2726,32 @@ def _header_compiles(root: Path, version: str, unit: str, log, platform: str = "
     return ForkProject(root).run(["ninja", obj], log=log, timeout=TOOL_SECONDS, platform=platform)[0]
 
 
-_PROGRAMS: dict[tuple, list[PE]] = {}  # (paths, mtimes) -> the parsed programs, for data_bytes
+@functools.lru_cache(maxsize=8)
+def _module_paths(config: Path, stamp: int) -> tuple:
+    info = json.loads(config.read_text(encoding="utf-8"))
+    return tuple((module["exe"], module["image_base"]) for module in info.get("modules", []))
+
+
+@functools.lru_cache(maxsize=2)
+def _parsed_programs(files: tuple) -> list[PE]:
+    found = []
+    for path, base, _stamp, _size in files:
+        data = path.read_bytes()
+        found.append(read_pe(data if base is None else rebase(data, base)))
+    return found
 
 
 def _programs_of(root: Path, manifest: dict) -> list[PE]:
-    """The user's copies (the .exe, then the game's DLLs: functions.json's "modules"), parsed once per change of
-    them (a diff reads several constants)."""
+    """Read each original module at its assigned base. Helpers revisit it for every brief, and replacing any
+    one of the files must invalidate its evidence even when the main program and function index stay put."""
     config = root / "config" / manifest["version"] / "functions.json"
-    paths = [root / manifest["game"]["path"], *([config] if config.is_file() else [])]
-    key = tuple((str(path), path.stat().st_mtime_ns) for path in paths)
-    if key not in _PROGRAMS:
-        info = json.loads(config.read_text(encoding="utf-8")) if config.is_file() else {}
-        modules = programs(root, info) if info.get("modules") else {}
-        _PROGRAMS.clear()
-        _PROGRAMS[key] = [read_pe(paths[0].read_bytes()), *(pe for name, pe in modules.items() if name)]
-    return _PROGRAMS[key]
+    modules = _module_paths(config, config.stat().st_mtime_ns) if config.is_file() else ()
+    files = []
+    for name, base in ((manifest["game"]["path"], None), *modules):
+        path = root / name
+        stat = path.stat()
+        files.append((path, base, stat.st_mtime_ns, stat.st_size))
+    return _parsed_programs(tuple(files))
 
 
 def _program_at(root: Path, manifest: dict, addr: int) -> PE | None:

@@ -14,6 +14,8 @@ local Linux runner, SN Systems EE-GCC and CodeWarrior through wibo. Physical Int
 Mac and retail-game verification remain planned; Apple Silicon checks use the
 homemade PS2 demo. Arbitrary imported Make/Ninja builds in the VM remain planned.
 
+The PS2 desktop tool page and project agents can decompile an R5900 function, scan SDK signatures, and compare function shapes across two executables. All three were exercised on the Apple Silicon GT4 boot project.
+
 ## What works where
 
 Each feature and the platforms it covers today. A — is a gap: pick one up (the notes under the table say where to
@@ -22,6 +24,9 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 
 | Feature | N64 | PS1 | PS2 | PS3 | PS4 | PSP | GBA | GameCube · Wii | Windows PC | Xbox | DS | Public decomps |
 | :-- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| R5900 decompiler, SDK signatures and cross-ELF symbol candidates in the desktop and agent tools | — | — | ✓ | — | — | — | — | — | — | — | — | — |
+| Original DLL imports, linker thunks and referenced data in helper briefs and tools | — | — | — | — | — | — | — | — | ✓ from scratch | — | — | — |
+| Verify assembly against pinned PS2SDK sources | — | — | ✓ | — | — | — | — | — | — | — | — | — |
 | Status | recommended | beta | beta | beta | beta | beta | beta | beta | beta | beta | beta | the project's own |
 | Start from your own copy | ✓ | ✓ | ✓ | ✓ decrypted EBOOT.ELF | ✓ decrypted ELF | ✓ unencrypted or decrypted program and modules (ISO, CSO, CHD) | ✓ ROM | ✓ | ✓ | ✓ default.xbe, .xiso or Redump .iso | ✓ | fork by address |
 | Judge | link · compare | link · compare | link · compare | link · compare | objdiff | link · compare | link · compare | objdiff | objdiff | objdiff | objdiff | objdiff |
@@ -42,6 +47,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | Compiler ranges and suggestions | ✓ | ✓ | ✓ | ✓ (ps3dev GCC, your SDK's) | — | ✓ | — | from scratch: per source file (`try_compiler`, Settings); else the project's build | per source file (`try_compiler`, Settings) | per source file (`try_compiler`, Settings): Visual C++ 7.0 / 7.1, your XDK's own | from scratch: per source file (`try_compiler`, Settings); else the project's build | the project's build |
 | Flag search (`search_flags`) | ✓ | ✓ | ✓ | ✓ | — | ✓ | — | — (the project's flags only) | per source file (/Oy- on 32-bit, /O1, /Ob1) | per source file | — (the project's flags only) | the project's build |
 | Find better compiler settings from saved C | ✓ | ✓ | ✓ | ✓ | — project mode | ✓ | ✓ | — project mode | — project mode | — project mode | — project mode | — public builds |
+| Compare one C candidate across compiler profiles (`compare_compilers`) | ✓ | ✓ | ✓ | ✓ | — project mode | ✓ | ✓ | — project mode | — project mode | — project mode | — project mode | — public builds |
 | Compiler map and the judge's survey | ✓ | ✓ | ✓ | — | — | ✓ | — | ✓ from scratch: per source file (its own compilers, nearest first); else the project's build | ✓ per source file, Rich header | the XDK build's compiler (no Rich header: one per game) | ✓ from scratch: per source file (its own compilers, nearest first); else the project's build | — |
 | Range checks: a range applies after its neighbours confirm it | ✓ | ✓ | ✓ | — | — | ✓ | — | ✓ from scratch: per source file; else the project's build | ✓ over source files | ✓ | ✓ from scratch: per source file; else the project's build | — |
 | C++ classes from the code (`get_class`) | ✓ | ✓ | ✓ | — | — | ✓ | — | — | ✓ (named by RTTI where the program has it) | ✓ (RTTI where the program has it) | — | — |

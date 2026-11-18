@@ -1,12 +1,19 @@
 """A manual search has explicit limits and uses the ordinary permuter judge."""
 
+import io
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
+from decompnet import compiler, scoring
 from decompnet.app import deep_permuter
 from decompnet.app.engine import RomNetwork
+from decompnet.app.permute import State
 from decompnet.network import NetworkError
 
 
@@ -72,6 +79,30 @@ def test_variant_limit_is_checked_before_another_compile(tmp_path, monkeypatch):
     assert search.log.snapshot["best_score"] == 20
     assert search.log.snapshot["tested"] == 1
     assert search.log.snapshot["history"] == [{"tested": 0, "score": 40}, {"tested": 1, "score": 20}]
+
+
+def test_deadline_expires_while_deep_permuter_waits_for_compiler_capacity(tmp_path, monkeypatch):
+    from decompnet.app.permute import Permuter
+
+    net = setup(tmp_path)
+    agent, _ = net.local_agent(deep_permuter.AGENT)
+    search = deep_permuter.Search(net, 1, 8, Log())
+    monkeypatch.setattr(compiler, "_SLOTS", compiler.CompilerQueue(1))
+    queued = threading.Event()
+
+    def judge(*_):
+        queued.set()
+        with compiler.compiler_slots():
+            pytest.fail("a trial started after the deadline")
+
+    monkeypatch.setattr(Permuter, "_score", judge)
+    with ThreadPoolExecutor(1) as pool, compiler.compiler_slots():
+        attempt = pool.submit(search._score, agent, net.project_row("game"),
+                              net._function("f", "game"), "candidate", 40, None)
+        assert queued.wait(3)
+        search.deadline = time.monotonic() - 1
+        with pytest.raises(deep_permuter.SearchLimit, match="Time limit reached"):
+            attempt.result(timeout=3)
 
 
 def test_search_stops_at_variant_limit_and_keeps_a_verified_improvement(tmp_path, monkeypatch):
@@ -385,3 +416,120 @@ def test_the_automatic_permuters_claim_between_turns_is_waited_out(tmp_path, mon
 def test_deep_searches_leave_a_worker_for_the_rest(monkeypatch, cores, searches):
     monkeypatch.setattr(deep_permuter.workers, "WORKERS", cores)
     assert deep_permuter.max_searches() == searches
+
+
+@pytest.mark.parametrize("slots,width", [(8, 6), (12, 10)])
+def test_parallel_wave_preserves_order_and_drains_on_exact_match(tmp_path, monkeypatch, slots, width):
+    net = setup(tmp_path)
+    monkeypatch.setattr(net, "on_match", lambda *args: None)
+    monkeypatch.setattr(deep_permuter, "COMPILER_SLOTS", slots)
+    search = deep_permuter.Search(net, 1, width + 1, Log())
+    fn, proj = net._function("f", "game"), net.project_row("game")
+    agent, _ = net.local_agent(deep_permuter.AGENT)
+    barrier = threading.Barrier(width, timeout=3)
+    speculative = [f"variant-{i}" for i in range(width - 1)]
+    cleaned = []
+
+    def judge(proj, fn, header, source):
+        try:
+            barrier.wait()
+            if source == "winner":
+                return scoring.DiffResult(0, 100, [], True)
+            check = compiler._CANCEL_CHECK.get()
+            stop_by = time.monotonic() + 3
+            while time.monotonic() < stop_by:
+                check()
+                time.sleep(0.01)
+            pytest.fail("a speculative compile kept running after the match")
+        finally:
+            cleaned.append(source)
+
+    monkeypatch.setattr(search, "_judge_rom", judge)
+    assert search._hold(agent, fn)
+    search.tested = 1  # the serial baseline already spent one trial
+    try:
+        with ThreadPoolExecutor(width) as pool:
+            def choose_pool(requested):
+                assert requested == width
+                return pool
+
+            monkeypatch.setattr(deep_permuter, "trial_pool", choose_pool)
+            with closing(search._trials(agent, proj, fn, ["winner", *speculative, "over budget"],
+                                         lambda: 40, None, search.deadline, State())) as results:
+                assert next(results) == ("winner", 0, None)
+            assert sorted(cleaned) == sorted([*speculative, "winner"])
+        saved = net._function("f", "game")
+        assert (saved["status"], saved["best_source"], search.tested) == ("matched", "winner", width + 1)
+        assert net.store.one("SELECT COUNT(*) AS n FROM attempts")["n"] == 1
+    finally:
+        search._let_go(agent, fn)
+
+
+def test_parallel_wave_does_not_publish_after_a_header_change(tmp_path, monkeypatch):
+    net = setup(tmp_path)
+    monkeypatch.setattr(deep_permuter, "COMPILER_SLOTS", 6)
+    search = deep_permuter.Search(net, 1, 10, Log())
+    fn, proj = net._function("f", "game"), net.project_row("game")
+    agent, _ = net.local_agent(deep_permuter.AGENT)
+
+    def judge(proj, fn, header, source):
+        if source == "stale winner":
+            with net.store.tx() as db:
+                db.execute("UPDATE context_versions SET header='edited during compilation'")
+            return scoring.DiffResult(0, 100, [], True)
+        return None
+
+    monkeypatch.setattr(search, "_judge_rom", judge)
+    assert search._hold(agent, fn)
+    try:
+        with ThreadPoolExecutor(4) as pool:
+            monkeypatch.setattr(deep_permuter, "trial_pool", lambda width: pool)
+            with pytest.raises(deep_permuter.SearchLimit, match="header or target changed"):
+                list(search._trials(agent, proj, fn, ["stale winner", "fall through"],
+                                    lambda: 40, None, search.deadline, State()))
+        assert net._function("f", "game")["best_score"] == 40
+        assert not net.store.one("SELECT id FROM attempts")
+    finally:
+        search._let_go(agent, fn)
+
+
+def test_parallel_wave_judges_duplicates_once_and_yields_scores_in_order(tmp_path, monkeypatch):
+    net = setup(tmp_path)
+    monkeypatch.setattr(deep_permuter, "COMPILER_SLOTS", 6)
+    search = deep_permuter.Search(net, 1, 9, Log())
+    fn, proj = net._function("f", "game"), net.project_row("game")
+    agent, _ = net.local_agent(deep_permuter.AGENT)
+    judged = []
+
+    def judge(proj, fn, header, source):
+        judged.append(source)
+        return scoring.DiffResult(60 if source == "a" else 50, 100, [], False)
+
+    monkeypatch.setattr(search, "_judge_rom", judge)
+    assert search._hold(agent, fn)
+    try:
+        with ThreadPoolExecutor(4) as pool:
+            monkeypatch.setattr(deep_permuter, "trial_pool", lambda width: pool)
+            scores = list(search._trials(agent, proj, fn, ["a", "b", "a"], lambda: 40,
+                                         None, search.deadline, State()))
+        assert scores == [("a", 60, None), ("b", 50, None), ("a", 60, None)]
+        assert sorted(judged) == ["a", "b"] and search.tested == 2 and search.skipped == 1
+    finally:
+        search._let_go(agent, fn)
+
+
+def test_cancellation_interrupts_a_wait_for_the_generator(monkeypatch):
+    from decompnet.app.permute import Generator
+
+    gen = object.__new__(Generator)
+    gen.proc = SimpleNamespace(stdin=io.BytesIO())
+    waits = []
+    monkeypatch.setattr(gen, "_line", lambda deadline: waits.append(deadline))
+
+    def cancel_after_one_wait():
+        if waits:
+            raise RuntimeError("cancelled")
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        gen.batch({"function": "f"}, check_cancel=cancel_after_one_wait)
+    assert len(waits) == 1

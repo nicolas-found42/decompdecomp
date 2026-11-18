@@ -23,6 +23,7 @@ import time
 import uuid
 from pathlib import Path
 
+from . import ish_runner
 from .hostenv import NO_WINDOW
 
 IMAGE = 'python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f'
@@ -80,6 +81,8 @@ def status(refresh: bool = False) -> tuple[bool, str]:
     global _status
     if not wanted():
         return False, 'The Linux VM runner is for macOS; Linux runs packs directly and Windows uses WSL.'
+    if root := ish_runner.runtime():
+        return (True, '') if ish_runner.ready(root) else (False, 'The configured iSH runtime is incomplete.')
     if not executable('colima') or not executable('docker'):
         return False, INSTALL
     if _status and not refresh and time.monotonic() - _status[2] < 10:
@@ -97,6 +100,11 @@ def status(refresh: bool = False) -> tuple[bool, str]:
 def setup(log=print) -> dict:
     """Explicit Setup starts only this app's VM and pulls the exact runtime image."""
     global _status
+    if wanted() and ish_runner.runtime():
+        ok, why = status(refresh=True)
+        if not ok:
+            raise VMError(why)
+        return {'ready': True}
     if not wanted() or not executable('colima') or not executable('docker'):
         raise VMError(INSTALL)
     with _setup_lock:
@@ -191,6 +199,12 @@ def prepare_tools(directories: tuple[Path, ...]) -> tuple[str, ...]:
             runtime = str(index)
     key = digest.hexdigest()[:32]
     paths = tuple(f'/tools/{key}/{i}' for i in range(len(directories)))
+    if root := ish_runner.runtime():
+        try:
+            ish_runner.prepare(root, key, directories)
+        except (OSError, ValueError) as error:
+            raise VMError(str(error)) from error
+        return paths
     cache = (profile(), key)
     with _tools_lock:
         if cache in _prepared:
@@ -231,15 +245,21 @@ def run(argv: list[str], cwd: Path, timeout: float, *, outputs: list[str] | None
             if size > MAX_FILE or total > MAX_TOTAL:
                 raise VMError('The compiler workspace exceeds the Linux runner transfer limit.')
             files[name] = base64.b64encode(file.read_bytes()).decode()
-    payload = json.dumps({'argv': argv, 'files': files, 'outputs': outputs, 'timeout': timeout}).encode()
-    name = 'decomp-compile-' + uuid.uuid4().hex
-    result = _invoke(_container(name), payload, timeout + 20, name, check_cancel)
-    if result.returncode:
-        raise VMError('The local Linux compiler container failed.\n' + result.stderr.decode(errors='replace')[-2000:])
-    try:
-        response = json.loads(result.stdout)
-    except (ValueError, UnicodeError) as error:
-        raise VMError('The Linux compiler runner returned an invalid response.') from error
+    if root := ish_runner.runtime():
+        try:
+            response = ish_runner.run(root, argv, files, outputs, timeout, check_cancel)
+        except (OSError, ValueError, subprocess.CalledProcessError) as error:
+            raise VMError(str(error)) from error
+    else:
+        payload = json.dumps({'argv': argv, 'files': files, 'outputs': outputs, 'timeout': timeout}).encode()
+        name = 'decomp-compile-' + uuid.uuid4().hex
+        result = _invoke(_container(name), payload, timeout + 20, name, check_cancel)
+        if result.returncode:
+            raise VMError('The local Linux compiler container failed.\n' + result.stderr.decode(errors='replace')[-2000:])
+        try:
+            response = json.loads(result.stdout)
+        except (ValueError, UnicodeError) as error:
+            raise VMError('The Linux compiler runner returned an invalid response.') from error
     if response.get('timeout'):
         raise subprocess.TimeoutExpired(argv, timeout)
     if response.get('error'):

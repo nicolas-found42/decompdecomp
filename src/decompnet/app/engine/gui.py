@@ -85,6 +85,9 @@ class GuiMixin:
         cfg = self.cfg(proj)
         agg = self.store.one(f"SELECT {PROGRESS_COLUMNS}, SUM(attempts) AS attempts "
                              f"FROM functions WHERE project_id=? AND {IN_BUILD}", proj["id"])
+        receipts = self.store.one(
+            "SELECT COUNT(*) AS n, SUM(size) AS bytes FROM functions "
+            "WHERE project_id=? AND status='asm' AND asm_verification IS NOT NULL", proj["id"])
         # a project made with a compiler decompdecomp doesn't have still opens: the page says so, and its Settings
         # let the user pick one that's here (#118)
         compiler_id = cfg["compiler"]["toolchain"]
@@ -93,6 +96,8 @@ class GuiMixin:
         return {
             "slug": proj["slug"], "title": proj["name"], "description": proj["description"],
             **console.project_facts(),
+            "can_verify_assembly": bool(console.verify_assembly and slug not in self.links and slug not in self.rooms),
+            "verified_assembly": receipts["n"], "verified_assembly_bytes": receipts["bytes"] or 0,
             "compilers": [c.id for c in console.compilers],
             "rom": {k: cfg["rom"].get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")},
             "compiler": {"toolchain": compiler_id, "name": consoles.compiler_name(compiler_id),
@@ -295,6 +300,7 @@ class GuiMixin:
         return {
             "name": fn["name"], "vram": fn["vram"], "rom_offset": fn["rom_offset"], "size": fn["size"],
             "insns": fn["n_insns"], "status": fn["status"], "best": fn["best_score"],
+            "assembly_verification": json.loads(fn["asm_verification"]) if fn["asm_verification"] else None,
             "best_differs": best_differs, **set_aside(fn),
             "asm": self._asm_text(fn, proj),
             "source": fn["matched_source"] or fn["best_source"] or (latest["source"] if latest else None) or fn["seed"],

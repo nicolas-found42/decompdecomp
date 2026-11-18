@@ -12,6 +12,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .. import __version__, agents, arch, consoles
+from ..consoles.ps2 import analysis as ps2_analysis
 from ..network import CLAIM_ORDERS, Agent, NetworkError
 from .engine import RomNetwork
 
@@ -265,9 +266,10 @@ def _project_info(net: RomNetwork, slug: str) -> str:
     ranges = "".join(f"\n  0x{r['start']:X}-0x{r['end']:X}: {r['name']} {' '.join(r['flags'])}" for r in ov["compiler_ranges"])
     return (f"{ov['title']} ({ov['rom']['game_code']}, {ov['rom']['region']})\n"
             f"compiler: {ov['compiler']['name']} {' '.join(ov['compiler']['flags'])}"
-            + (f"; these address ranges are built with another:{ranges}" if ranges else "") + "\n"
+            + "\n"
             + (f"this project's compilers (for try_compiler): {', '.join(ov['compilers'])}\n"
                if len(ov["compilers"]) > 1 else "")
+            + (f"Other compiler settings by address:{ranges}\n" if ranges else "")
             + f"progress: {ov['matched']}/{ov['functions']} functions matched ({pct:.1f}% of code), "
             f"{ov['attempts']} compiles so far, context.h v{ov['context_version']}\n"
             f"Next: claim_function(). Guides: guide().")
@@ -326,6 +328,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.request_boundary(agent, slug, function, end, reason),
     "read_data": lambda net, agent, slug, what, length=64: (net.forks.read_data(agent, slug, what, length)
                                                             if net.fork_slug(slug) else net.read_data(slug, what, length)),
+    "pe_imports": lambda net, agent, slug, function, offset=0: net.forks.function_references(slug, function, "pe_imports", offset),
+    "pe_data_refs": lambda net, agent, slug, function, offset=0: net.forks.function_references(slug, function, "pe_data_refs", offset),
     "get_class": lambda net, agent, slug, what="": net.get_class(slug, what),
     "guess_struct": lambda net, agent, slug, function, argument="arg0": net.guess_struct(slug, function, argument),
     "redraft": lambda net, agent, slug, function, context: net.redraft(slug, function, context),
@@ -341,8 +345,16 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "tidy_done": lambda net, agent, slug, unit, summary: net.readability.tidy_done(agent, slug, unit, summary),
     "suggest": lambda net, agent, slug, text, compiler="", flags="", function="", ranges="", source="":
         net.suggest(agent, slug, text, compiler, flags, function or None, ranges, source),
+    "ps2_decompile": lambda net, agent, slug, function, offset=0:
+        ps2_analysis.for_agent(net, slug, "r5900", function, offset),
+    "ps2_sdk_symbols": lambda net, agent, slug, function="", offset=0:
+        ps2_analysis.for_agent(net, slug, "sce-scan", function, offset),
+    "ps2_symbol_transfer": lambda net, agent, slug, function="", offset=0, companion="CORE.elf":
+        ps2_analysis.for_agent(net, slug, "transfer", function, offset, companion),
     "try_compiler": lambda net, agent, slug, function, compiler, flags="", source="":
         net.try_compiler(agent, slug, function, compiler, flags, source),
+    "compare_compilers": lambda net, agent, slug, function, compilers, flags="", source="":
+        net.compare_compilers(slug, function, compilers, flags, source),
     "search_notes": lambda net, agent, slug, query: net.search_notes(slug, query),
     "find_similar": lambda net, agent, slug, function, limit=5: net.find_similar(slug, function, limit),
     "guide": lambda net, agent, slug, topic="": guide_text(topic, net.overview(slug).get("platform")),
@@ -359,11 +371,15 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.propose_join(agent, _fork(net, slug, "join_functions"), function, with_function, reason),
 }
 
-READ_ONLY = frozenset({"project_info", "get_function", "last_diff", "get_context", "read_data", "get_class",
-                       "guess_struct", "compiler_map", "list_functions", "search_flags", "search_notes",
+PS2_ANALYSIS = {"ps2_decompile", "ps2_sdk_symbols", "ps2_symbol_transfer"}
+
+REFERENCE_TOOLS = {"pe_imports", "pe_data_refs"}
+
+READ_ONLY = frozenset(PS2_ANALYSIS | REFERENCE_TOOLS | {"project_info", "get_function", "last_diff", "get_context", "read_data", "get_class",
+                       "guess_struct", "compiler_map", "list_functions", "search_flags", "compare_compilers", "search_notes",
                        "find_similar", "guide", "read_file", "search_code", "file_status", "standins_for"})
 
-ROM_ONLY = {"get_context", "edit_context", "split_function", "redraft", "search_flags"}
+ROM_ONLY = PS2_ANALYSIS | {"get_context", "edit_context", "split_function", "redraft", "search_flags", "compare_compilers"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file", "join_functions", "tidy_done",
              "standins_for"}
 LTCG_ONLY = {"standins_for"}  # only projects of games built with link-time code generation have harness/ files
@@ -377,6 +393,8 @@ def _rom_joins() -> bool:
 
 def _supports(console, name: str, fork: bool) -> bool:
     """Whether `console` can do `name` in this kind of project. A tool no console lacks keeps its place."""
+    if name in PS2_ANALYSIS:
+        return "ps2_analysis" in console.features and not fork
     if name == "join_functions":
         # Project mode's joins are the console's (Console.join_functions); a ROM's are the engine's (#192).
         return console.joins_functions if fork else _rom_joins()
@@ -400,7 +418,9 @@ def tool_names(fork: bool, console=None, ltcg: bool = False, scratch: bool = Tru
     own = console.own_tools if console is not None and scratch else frozenset()
     skip = ROM_ONLY - own if fork else FORK_ONLY
     names = [n for n in HANDLERS if n not in skip and (ltcg or n not in LTCG_ONLY)]
-    return [n for n in names if console is None or _supports(console, n, fork)]
+    return [n for n in names if (n not in REFERENCE_TOOLS or
+                                 fork and scratch and console is not None and n in console.reference_tools)
+            and (console is None or _supports(console, n, fork))]
 
 
 def project_tools(net: RomNetwork, slug: str | None, agent=None, include_disabled: bool = False) -> list[str]:
@@ -476,7 +496,7 @@ def call(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str
 ALWAYS_LOAD = agents.TOOL_META
 
 
-HEAVY_TOOLS = frozenset({"compile_and_diff", "search_code", "search_flags", "try_compiler",
+HEAVY_TOOLS = frozenset(PS2_ANALYSIS | {"compile_and_diff", "search_code", "search_flags", "try_compiler", "compare_compilers",
                          "edit_file", "split_file", "join_functions"})
 
 
@@ -603,6 +623,16 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         lbl_1_data_10 (forks); text, pointers and floats decoded."""
         return await run(ctx, "read_data", what=what, length=length)
 
+    @mcp.tool()
+    async def pe_imports(ctx: Context, function: str, offset: int = 0) -> str:
+        """Static Windows imports used by a function, with DLL, name or ordinal, call site, and IAT or thunk."""
+        return await run(ctx, "pe_imports", function=function, offset=offset)
+
+    @mcp.tool()
+    async def pe_data_refs(ctx: Context, function: str, offset: int = 0) -> str:
+        """A function's referenced data addresses with bounded text or hex previews from the original program."""
+        return await run(ctx, "pe_data_refs", function=function, offset=offset)
+
     @mcp.tool(meta=ALWAYS_LOAD)
     async def redraft(ctx: Context, function: str, context: str) -> str:
         """m2c's machine draft of a function made again with your declarations (a struct, a prototype, an extern
@@ -706,6 +736,21 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
                          source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
+    async def ps2_decompile(ctx: Context, function: str, offset: int = 0) -> str:
+        """Read Ghidra Emotion Engine pseudocode for a PS2 function name or address. offset continues a long result."""
+        return await run(ctx, "ps2_decompile", function=function, offset=offset)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def ps2_sdk_symbols(ctx: Context, function: str = "", offset: int = 0) -> str:
+        """Find SDK signature candidates for a PS2 function, or browse the project's scan. offset continues a page."""
+        return await run(ctx, "ps2_sdk_symbols", function=function, offset=offset)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def ps2_symbol_transfer(ctx: Context, function: str = "", offset: int = 0, companion: str = "CORE.elf") -> str:
+        """Find candidate counterparts in a companion ELF in analysis-inputs. Filter by function or page with offset."""
+        return await run(ctx, "ps2_symbol_transfer", function=function, offset=offset, companion=companion)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def try_compiler(ctx: Context, function: str, compiler: str, flags: str = "", source: str = "") -> str:
         """Compile a function's C with another compiler and flags and see the diff, recording nothing: to find out
         which compiler built a part of the game before you suggest it. Cheap: try several.
@@ -718,6 +763,17 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
             source: the C (default: the function's best attempt)
         """
         return await run(ctx, "try_compiler", function=function, compiler=compiler, flags=flags, source=source)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def compare_compilers(ctx: Context, function: str, compilers: list[str], flags: str = "",
+                                source: str = "") -> str:
+        """Rank the assigned settings and one or two alternative compiler IDs from project_info on the same C.
+
+        ROM projects only. Pass flags for the alternatives or leave them empty to use each compiler's defaults
+        (the assigned compiler keeps its assigned flags). Omit source to use saved C. Returns scores and exact
+        matches without changing attempts or settings. Use try_compiler for a full diff of a promising profile.
+        """
+        return await run(ctx, "compare_compilers", function=function, compilers=compilers, flags=flags, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def search_notes(ctx: Context, query: str) -> str:

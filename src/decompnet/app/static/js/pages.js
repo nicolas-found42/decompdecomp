@@ -156,34 +156,85 @@ async function showToolsPage() {
   await loadState();
   renderTools();
 }
+let ps2Tool, ps2Busy = false;
+async function openPS2Analysis(tool) {
+  if (ps2Busy) return;
+  ps2Tool = tool;
+  const panel = $("ps2Analysis");
+  panel.hidden = false;
+  $("ps2AnalysisTitle").textContent = tool.name;
+  $("ps2AddressField").hidden = tool.id !== "r5900";
+  $("ps2CompanionField").hidden = tool.id !== "transfer";
+  $("ps2Result").hidden = $("ps2ResultTitle").hidden = true;
+  $("ps2AnalysisLog").textContent = "";
+  const projects = S.projects.filter(p => p.platform === "ps2" && p.kind !== "fork" && !p.missing);
+  $("ps2AnalysisProject").innerHTML = projects.map(p => `<option value="${esc(p.slug)}">${esc(p.title || p.slug)}</option>`).join("");
+  if (projects.some(p => p.slug === S.slug)) $("ps2AnalysisProject").value = S.slug;
+  $("ps2Run").disabled = tool.installed && !projects.length;
+  $("ps2Run").textContent = tool.installed ? "Run analysis" : "Install tool";
+  panel.scrollIntoView({block:"start"});
+}
+$("ps2Dismiss").onclick = () => { $("ps2Analysis").hidden = true; };
+$("ps2Choose").onclick = async () => {
+  try {
+    const {path} = await api("/api/pick", {method:"POST", body:{kind:"file", title:"Choose a second PS2 ELF"}});
+    if (path) $("ps2Companion").value = path;
+  } catch (e) { toast(esc(e.message), "err"); }
+};
+$("ps2Run").onclick = async () => {
+  if (ps2Busy || !ps2Tool) return;
+  const tool = ps2Tool, log = $("ps2AnalysisLog");
+  const controls = ["ps2Run","ps2Dismiss","ps2Choose","ps2Address","ps2Companion","ps2AnalysisProject"].map(id => $(id));
+  const done = beginWork(log, tool.name, controls);
+  $("ps2Result").hidden = $("ps2ResultTitle").hidden = true;
+  ps2Busy = true;
+  try {
+    const body = {slug:$("ps2AnalysisProject").value, tool:tool.id, address:$("ps2Address").value.trim(), companion:$("ps2Companion").value.trim()};
+    const {job} = await api(tool.installed ? "/api/ps2-analysis" : "/api/install-ps2-tool", {method:"POST",body});
+    const result = await followJob(job, log);
+    if (tool.installed) {
+      $("ps2ResultTitle").textContent = result.summary;
+      $("ps2Result").textContent = result.text;
+      $("ps2Result").hidden = $("ps2ResultTitle").hidden = false;
+    } else {
+      await loadState(); renderTools();
+      ps2Tool = S.st.ps2_tools.find(t => t.id === tool.id);
+      $("ps2Run").textContent = "Run analysis";
+    }
+  } catch (e) { showJobError(log, e.message); }
+  finally { ps2Busy = false; done(); }
+};
 function renderTools() {
-  const all = S.st.toolchains;
+  const all = [...(S.st.ps2_tools || []), ...S.st.toolchains];
   const group = (t) => t.platform || "tool";  // a compiler or a pack of them says its platform (toolchains.toml, kits/)
   // a chip per platform the list has, in its order (a console added later has its own), then the tools
   const groups = [["", "All"], ...[...new Set(all.map(group))].filter((g) => g !== "tool").map((g) => [g, g.replace("/", ", ")]),
     ["tool", "Tools"]];
   $("toolChips").innerHTML = groups.map(([k, label]) => `<button class="chip ${toolFilter === k ? "on" : ""}" data-g="${k}" type="button">${label} <span>${k ? all.filter((t) => group(t) === k).length : all.length}</span></button>`).join("");
-  $("toolChips").querySelectorAll("[data-g]").forEach((b) => { b.onclick = () => { toolFilter = b.dataset.g; renderTools(); }; });
+  $("toolChips").querySelectorAll("[data-g]").forEach((b) => { b.onclick = () => { toolFilter = b.dataset.g; if (toolFilter && toolFilter !== "PS2") $("ps2Analysis").hidden = true; renderTools(); }; });
   const rows = all.filter((t) => !toolFilter || group(t) === toolFilter);
   const vm = S.st.linux_vm;
-  const vmCard = vm && (!toolFilter || rows.some((t) => t.linux_vm)) ? `<div class="tool-card ${vm.ready ? "ok" : ""}"><div class="tc-top"><b>Local Linux compiler runner</b><span class="chip-s">macOS</span></div>
-    <p class="muted small">Runs Linux-only compiler packs in a dedicated Colima VM. Compiles stay local and have no network access.</p>
+  const vmCard = vm && (!toolFilter || rows.some((t) => t.linux_vm)) ? `<div class="tool-card ${vm.ready ? "ok" : ""}"><div class="tc-top"><b>${S.st.ish_runner ? "Apple Silicon compiler runner" : "Local Linux compiler runner"}</b><span class="chip-s">macOS</span></div>
+    <p class="muted small">${S.st.ish_runner ? "Runs original Sony compilers locally through iSH." : "Runs Linux-only compiler packs in a dedicated Colima VM. Compiles stay local and have no network access."}</p>
     <p class="small">${vm.ready ? "✓ Ready" : esc(vm.why)}</p>
-    <button class="ghost small-btn" id="prepareLinuxVm" type="button">${vm.ready ? "Check Linux runner" : "Prepare Linux runner"}</button></div>` : "";
+    <button class="ghost small-btn" id="prepareLinuxVm" type="button">${vm.ready ? (S.st.ish_runner ? "Check iSH runner" : "Check Linux runner") : "Prepare Linux runner"}</button></div>` : "";
   $("toolGrid").innerHTML = vmCard + rows.map((t) => `<div class="tool-card ${t.installed ? "ok" : ""}">
-      <div class="tc-top"><b>${esc(t.name)}</b>${t.license === "proprietary" ? `<span class="chip-s warn">proprietary</span>` : ""}${t.platform ? `<span class="chip-s">${esc(t.platform)}</span>` : ""}${t.linux_vm ? `<span class="chip-s">Linux VM</span>` : ""}</div>
+      <div class="tc-top"><b>${esc(t.name)}</b>${t.license === "proprietary" ? `<span class="chip-s warn">proprietary</span>` : ""}${t.platform ? `<span class="chip-s">${esc(t.platform)}</span>` : ""}${t.linux_vm ? `<span class="chip-s">${S.st.ish_runner ? "iSH" : "Linux VM"}</span>` : ""}</div>
       <p class="muted small">${esc(t.use)}</p>
       ${(t.copies || []).map((c) => `<div class="row copy"><span class="grow copy-text"><span class="ok-mark">✓ ${esc(c.build || "your copy")}</span>`
         + `${c.verified ? `<span class="muted small">${esc(c.verified)}</span>` : ""}`
         // (the folder's last parts: a full path is long; it's on hover)
         + `<span class="muted small copy-path" title="${esc(c.folder)}">…/${esc(c.folder.split(/[\\/]/).slice(-3).join("/"))}</span></span>`
         + `<button class="ghost small-btn" data-remove="${esc(t.id)}" data-folder="${esc(c.folder)}" type="button">Remove</button></div>`).join("")}
-      <div class="row">${!t.supported ? `<span class="muted small">not available for this computer</span>`
+      <div class="row">${t.analysis ? `${t.installed ? '<span class="ok-mark">✓ installed</span>' : ''}<button class="ghost small-btn" type="button" data-ps2-tool="${esc(t.id)}">${t.installed ? 'Open tool' : 'Install tool'}</button>` : !t.supported ? `<span class="muted small">not available for this computer</span>`
         : t.local ? `<span class="grow"></span><button class="ghost small-btn" data-local="${esc(t.id)}" type="button">${t.installed ? "Add a copy" : "Choose your folder"}</button>`
         : t.installed ? `<span class="ok-mark">✓ installed</span>`
         : `${t.changed ? `<span class="muted small grow">changed since you installed it</span>` : ""}`
           + `<button class="ghost small-btn" data-tc="${esc(t.id)}" data-prop="${t.license === "proprietary" ? 1 : ""}"`
           + ` type="button">${t.changed ? "Install again" : "Install"}</button>`}</div></div>`).join("");
+  $("toolGrid").querySelectorAll("[data-ps2-tool]").forEach(b => {
+    b.onclick = () => openPS2Analysis(all.find(t => t.id === b.dataset.ps2Tool));
+  });
   if ($("prepareLinuxVm")) $("prepareLinuxVm").onclick = prepareLinuxVm;
   $("toolGrid").querySelectorAll("[data-tc]").forEach((b) => { b.onclick = () => { b.disabled = true; installToolchain(b.dataset.tc, !!b.dataset.prop).finally(() => { b.disabled = false; }); }; });
   $("toolGrid").querySelectorAll("[data-local]").forEach((b) => { b.onclick = () => useLocalToolchain(b.dataset.local); });

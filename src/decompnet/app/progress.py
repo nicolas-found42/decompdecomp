@@ -174,6 +174,10 @@ def _repair(net, pid: int, folder: Path, disk: dict[str, str], report) -> dict[s
 NAME = re.compile(r"[A-Za-z_]\w*|\.L[0-9A-F]+")
 
 
+# Period GCC uses dollar signs in linker names for destructors and virtual tables.
+LINKER_NAME = re.compile(r"[A-Za-z_][\w$]*|\.L[0-9A-F]+")
+
+
 def _manifest(files: dict[str, str], cfg: dict, known_names=()) -> dict:
     try:
         manifest = json.loads(files[saves.MANIFEST])
@@ -210,7 +214,7 @@ def _manifest(files: dict[str, str], cfg: dict, known_names=()) -> dict:
                 or not isinstance(manifest.get("set_aside", []), list):
             raise ValueError("symbols, notes, knowledge and set_aside must be lists")
         for symbol in manifest.get("symbols", []):
-            if (not isinstance(symbol, dict) or not NAME.fullmatch(symbol.get("name", ""))
+            if (not isinstance(symbol, dict) or not LINKER_NAME.fullmatch(symbol.get("name", ""))
                     or not isinstance(symbol.get("address"), int) or not isinstance(symbol.get("size", 0), int)
                     or symbol.get("kind", "data") not in ("func", "data", "string", "jtbl", "bss")):
                 raise ValueError(f"symbol {symbol.get('name')!r} has an invalid name, address, size or kind")

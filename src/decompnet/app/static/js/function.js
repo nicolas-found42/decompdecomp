@@ -90,6 +90,10 @@ async function refreshFn(first) {
     };
     $("fnAside").hidden = !d.set_aside;
     $("fnAsideWhy").textContent = d.set_aside ? `Set aside, agents aren't handed it: ${d.set_aside}.` : "";
+    if (d.assembly_verification) {
+      const receipt = d.assembly_verification;
+      $("fnAsideWhy").textContent = `Verified SDK assembly · ${receipt.symbols.join(", ")} · ${receipt.source} · SHA-256 ${receipt.code_sha256}`;
+    }
     $("fnReopen").onclick = async () => {
       try {
         await api("/api/reopen", { method: "POST", body: { slug: S.slug, name: d.name } });

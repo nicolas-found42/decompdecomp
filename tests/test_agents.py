@@ -574,6 +574,15 @@ def test_every_opencode_helper_names_its_own_config_so_opencode_finds_it(tmp_pat
         assert mcp[opencode.MCP_SERVER]["headers"] == {"Authorization": "Bearer tok"}
 
 
+@pytest.mark.parametrize(("version", "args"), [
+    ("1.4.0", ("models",)),
+    ("opencode v2.1.4", ("models", "--standalone")),
+])
+def test_opencode_lists_models_in_the_same_service_mode_as_helpers(version, args, monkeypatch):
+    monkeypatch.setitem(kinds.known_versions, "opencode", (0, version))
+    assert opencode.OPENCODE.model_catalog_args("opencode") == args
+
+
 def test_codex_helpers_cannot_search_the_web(tmp_path, monkeypatch):
     """Helpers that searched the web pulled a public decomp's code instead of working the function out."""
     m = _manager(tmp_path, monkeypatch, "codex")

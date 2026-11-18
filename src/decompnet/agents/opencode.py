@@ -52,6 +52,10 @@ class Opencode(Agent):
         base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
         return read_json(base / "opencode" / "opencode.json").get("model") or None
 
+    def model_catalog_args(self, path: str) -> tuple[str, ...]:
+        # Discovery should use the same account and isolated service as the helpers it launches.
+        return (*self.models_args, "--standalone") if self.standalone(path) else self.models_args
+
     def standalone(self, exe: str) -> bool:
         """opencode 2 runs every `opencode run` in one background service, which connects the user's own MCP servers
         once, without a helper's session token: both GTA San Andreas helpers worked as the user's one chat agent, on

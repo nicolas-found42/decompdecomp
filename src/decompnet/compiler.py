@@ -11,9 +11,11 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,11 +25,56 @@ from decompnet.hostenv import NO_WINDOW
 from . import limits, linuxvm, wsl
 
 MAX_SOURCE_BYTES = 64 * 1024
-# Per-compile resource caps (address space, CPU seconds, output file size) and a global
-# concurrency cap, so a hostile submission can't take the host down with it.
+# Per-compile address space, CPU time and output file size.
 LIMITS = ["--as=2147483648", "--cpu=30", "--fsize=67108864"]
-_SLOTS = threading.BoundedSemaphore(max(2, (os.cpu_count() or 4) - 1))
+MAX_COMPILER_SLOTS = 12
+RESERVED_CORES = 2
+COMPILER_SLOTS = max(1, min(MAX_COMPILER_SLOTS, (os.cpu_count() or 4) - RESERVED_CORES))
+QUEUE_CANCEL_SECONDS = 0.1
 _CANCEL_CHECK = contextvars.ContextVar("compiler_cancel_check", default=None)
+
+
+class CompilerQueue:
+    """One budget for compiler work. A multi-unit build reserves all its slots at once."""
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self._free = capacity
+        self._lock = threading.Condition()
+        self._waiting: deque[object] = deque()
+
+    @contextmanager
+    def reserve(self, count: int, check_cancel=None):
+        if not 1 <= count <= self.capacity:
+            raise ValueError("Compiler reservation exceeds the queue capacity.")
+        waiter = object()
+        with self._lock:
+            self._waiting.append(waiter)
+            try:
+                while True:
+                    if check_cancel:
+                        check_cancel()
+                    if self._waiting[0] is waiter and self._free >= count:
+                        self._free -= count
+                        break
+                    self._lock.wait(QUEUE_CANCEL_SECONDS if check_cancel else None)
+            finally:
+                self._waiting.remove(waiter)
+                self._lock.notify_all()
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._free += count
+                self._lock.notify_all()
+
+
+_SLOTS = CompilerQueue(COMPILER_SLOTS)
+
+
+def compiler_slots(count: int = 1):
+    """Wait before preparing the compiler's inputs so queued requests hold fewer resources."""
+    return _SLOTS.reserve(count, _CANCEL_CHECK.get())
 
 
 @contextmanager
@@ -51,11 +98,14 @@ _FORBIDDEN = [
 _INCLUDE = re.compile(r'#\s*include\s*"([^"]+)"')
 
 
+_GCC_INTERFACE = re.compile(r"^[ \t]*#[ \t]*pragma[ \t]+interface[ \t]*$", re.M)
+
+
 class SourceRejected(ValueError):
     pass
 
 
-def check_source(source: str) -> None:
+def check_source(source: str, *, allow_gcc_interface: bool = False) -> None:
     """Refuse C that could match without being C (inline asm, asm-include macros, pragmas) or reach outside the
     sandbox (absolute or `..` includes): what the judge accepts must come from a compiler."""
     if len(source.encode()) > MAX_SOURCE_BYTES:
@@ -63,6 +113,10 @@ def check_source(source: str) -> None:
     for inc in _INCLUDE.findall(source):
         if inc.startswith("/") or ".." in inc.split("/"):
             raise SourceRejected(f"include path not allowed: {inc}")
+    if allow_gcc_interface:
+        # Match the entire logical line before masking strings. Header arguments stay forbidden.
+        source = source.replace("\r\n", "\n").replace("\r", "\n").replace("\\\n", "")
+        source = _GCC_INTERFACE.sub("", source)
     code = _COMMENTS_AND_STRINGS.sub(" ", source)
     for pattern, why in _FORBIDDEN:
         if pattern.search(code):
@@ -80,6 +134,7 @@ class CompilerConfig:
     wsl: bool = False  # a Linux toolchain on Windows: runs inside WSL 2, `cmd` holds WSL paths (see wsl.py)
     prelude: str = ""  # the toolchain's prelude (Toolchain.prelude)
     cplusplus: bool = False  # it compiles C++ too: what doesn't compile as C is tried as C++ (Toolchain.cplusplus)
+    allow_gcc_interface: bool = False
     linux_vm: bool = False  # isolated local macOS Linux compiler jobs
 
 
@@ -143,6 +198,21 @@ def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd:
     if _sandbox_mode(cfg) == "wsl":
         check = _CANCEL_CHECK.get()
         return wsl.run(argv, cwd or work, timeout, **stage, **({"check_cancel": check} if check else {}))
+    # ProDG builds the preprocessor command from its driver's real path without quoting it.
+    # wibo resolves symlinks to the driver, so stage the executable itself and point at its installed libraries.
+    if (sys.platform == "darwin" and len(argv) > 3 and Path(argv[0]).name == "wibo"
+            and argv[1].endswith("/bin/ee-gcc.exe") and " " in argv[1] and "-B" in argv[:-1]):
+        driver = Path(argv[1])
+        with tempfile.TemporaryDirectory(prefix="decomp-prodg-", dir="/tmp") as tmp:
+            alias = Path(tmp)
+            (alias / "bin").mkdir()
+            shutil.copy2(driver, alias / "bin" / driver.name)
+            (alias / "lib").symlink_to(driver.parents[1] / "lib", target_is_directory=True)
+            argv = argv.copy()
+            argv[1] = str(alias / "bin" / driver.name)
+            prefix = argv.index("-B") + 1
+            argv[prefix] = argv[prefix].replace(str(driver.parents[1]) + "/", str(alias) + "/", 1)
+            return _exec(cfg, work, argv, timeout, cwd, **stage)
     # in the work folder, never in the app's own: KMC GCC's assembler (binutils 2.6) can't read its input when the
     # current directory is / ("Bad file descriptor"), as it can be for a program its launcher starts
     check = _CANCEL_CHECK.get()
@@ -200,8 +270,9 @@ def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 30
     """Run a toolchain command inside `work` (the sandbox's /work), e.g. to build a whole exported project.
     Paths in `argv` must be relative to `work`. In WSL, naming the files it reads (`inputs`) and writes (`outputs`)
     lets old 32-bit compilers work on a copy in WSL's own file system, which they need (see wsl.run)."""
-    return _exec(cfg, Path(work), argv, timeout, cwd=Path(work),
-                 **({} if outputs is None else {"inputs": inputs, "outputs": outputs}))
+    with compiler_slots():
+        return _exec(cfg, Path(work), argv, timeout, cwd=Path(work),
+                     **({} if outputs is None else {"inputs": inputs, "outputs": outputs}))
 
 
 def compile_source(cfg: CompilerConfig, context_header: str, source: str, trusted: bool = False) -> CompileResult:
@@ -210,11 +281,11 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
     both."""
     if not trusted:
         try:
-            check_source(source)
+            check_source(source, allow_gcc_interface=cfg.allow_gcc_interface)
         except SourceRejected as e:
             return CompileResult(False, None, f"rejected: {e}")
 
-    with tempfile.TemporaryDirectory(prefix="decompnet-") as tmp:
+    with compiler_slots(), tempfile.TemporaryDirectory(prefix="decompnet-") as tmp:
         work = Path(tmp)
         inc = work / "include"
         inc.mkdir()
@@ -250,18 +321,8 @@ def _compile_as(cfg: CompilerConfig, work: Path, root: str, source: str, ext: st
     argv = [a.replace("{include}", subst["{include}"]) for a in argv]
     (work / "func.o").unlink(missing_ok=True)
     try:
-        # A restore must also be cancellable while other jobs occupy every compiler slot.
-        check = _CANCEL_CHECK.get()
-        while not _SLOTS.acquire(timeout=0.1):
-            if check:
-                check()
-        try:
-            if check:
-                check()
-            proc = _exec(cfg, work, argv, cfg.timeout,
-                         **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) in ("wsl", "linux-vm") else {}))
-        finally:
-            _SLOTS.release()
+        proc = _exec(cfg, work, argv, cfg.timeout,
+                     **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) in ("wsl", "linux-vm") else {}))
     except subprocess.TimeoutExpired:
         return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
     log = (proc.stdout + proc.stderr).replace(root + "/", "")

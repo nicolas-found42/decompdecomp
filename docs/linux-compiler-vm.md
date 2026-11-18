@@ -1,12 +1,28 @@
 # PS2 compilers on macOS
 
-All seven listed PS2 compiler packs retain their original compiler binaries and
+The PS2 compiler packs retain their original compiler binaries and
 use the ordinary linked-byte judge. Sony EE-GCC 2.9 (991111), 2.96 and 3.2 run
-through an optional local Linux runner. SN Systems EE-GCC 2.95.2/2.95.3 and
+locally through iSH on Apple Silicon or through a Colima virtual machine. SN Systems EE-GCC 2.95.2/2.95.3 and
 CodeWarrior PS2 2.3.3/3.0.1 use pinned native Mac wibo and need no VM. CodeWarrior
 still requires explicit proprietary license acceptance in Setup.
 
-## Set up Sony EE-GCC
+## Run Sony EE-GCC directly on Apple Silicon
+
+The native Mac app can run the original 32-bit Intel Linux compiler binaries with iSH, a user-mode emulator built for ARM64. Each compiler job gets a private filesystem and runs under the macOS sandbox. The linker and byte comparison stay in the Mac app. This mode needs an APFS temporary directory for cloned compiler files.
+
+With Git, Homebrew LLVM and LLD, Ninja and uv installed, build the runtime once in a new directory:
+
+```sh
+packaging/macos/prepare-ish.sh "$HOME/Library/Application Support/decompdecomp-ish"
+export DECOMP_ISH_RUNTIME="$HOME/Library/Application Support/decompdecomp-ish"
+uv run decomp
+```
+
+Keep that environment variable in the launcher. Setup installs the same pinned Sony compiler archives. The runtime uses the Debian i386 glibc version pinned in the build script. The PS2 profiles include 991111-01, 991111 with the 2.96 assembler, and 2.96 with the 2004 assembler.
+
+On a standalone PS2 project, **Verify SDK assembly** assembles pinned PS2SDK routines and compares whole functions against the project image. The function detail shows the source and hash. Verified assembly is counted separately from matched C. A saved project records the proof and checks the assembly again when restoring it.
+
+## Set up Sony EE-GCC with Colima
 
 1. Install Colima and the Docker CLI: `brew install colima docker`.
 2. In **Compilers & tools**, choose **Prepare Linux runner**. This starts the
@@ -23,7 +39,7 @@ named profile's local Unix socket, ignoring ambient remote Docker settings.
 Colima/Docker are user-managed infrastructure; compilers and the runtime image
 are checksum/digest pinned by the app.
 
-## What a compile does
+## How Colima runs a compile
 
 The host keeps the verified archives intact. An immutable guest cache, keyed by
 install manifests and worker contents, extracts the compiler and pinned i386

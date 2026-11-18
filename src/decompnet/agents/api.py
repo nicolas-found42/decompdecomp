@@ -14,9 +14,11 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 
 import httpx
 
+from .. import __version__
 from . import Agent, args_brief, number
 
 API_PRESETS = {
@@ -92,6 +94,9 @@ class Api(Agent):
         if not base or not model:
             raise RuntimeError("set the API address and model first")
         headers = {"Content-Type": "application/json"}
+        if httpx.URL(base).host == "opencode.ai":
+            headers["User-Agent"] = f"decompdecomp/{__version__}"
+            headers["x-opencode-session"] = uuid.uuid4().hex
         if s.options.get("api_key"):
             headers["Authorization"] = f"Bearer {s.options['api_key']}"
         schema = api_tool_schemas(fork=bool(net.fork_slug(s.slug)), names=tools.project_tools(net, s.slug, agent))
@@ -197,7 +202,7 @@ def endpoint_entry(e: dict) -> dict:
     out = {"id": str(e.get("id") or ""), "provider": provider, "base_url": base,
            "model": (e.get("model") or preset["model"]).strip(),
            "name": (e.get("name") or "").strip() or (host if moved and host else preset["name"]) or "API"}
-    for k in ("api_key", "context_tokens", "max_sessions"):
+    for k in ("api_key", "context_tokens", "max_sessions", "reasoning_effort"):
         if e.get(k):
             out[k] = e[k]
     return out
@@ -384,6 +389,13 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                            "notes and a draft. count > 1: a batch of small functions to judge together.",
                            s(function=st("optional name or address"), strategy=st("finish | easiest | closest | hardest | random"),
                              count=it("up to 6 small functions at once"))),
+        "ps2_decompile": ("Read Ghidra Emotion Engine pseudocode for a PS2 function.",
+                          s(function=st("function name or address", True), offset=it("character offset to resume"))),
+        "ps2_sdk_symbols": ("Find SDK signature candidates for one PS2 function or browse all.",
+                            s(function=st("optional function name or address"), offset=it("character offset to resume"))),
+        "ps2_symbol_transfer": ("Compare PS2 functions with a companion ELF. Results are symbol candidates.",
+                                s(function=st("optional function name or address"), offset=it("character offset to resume"),
+                                  companion=st("filename in analysis-inputs, default CORE.elf"))),
         "get_function": ("Show any function by name or address.", s(function=st("name or address", True))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
@@ -414,6 +426,10 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                               reason=st("what follows and how you can tell", True))),
         "read_data": ("Hex dump of the original's data at an address or symbol.", s(what=st("address or symbol", True),
                                                                                     length=it("bytes, up to 512"))),
+        "pe_imports": ("Original DLL imports by function, including direct IAT references and linker thunks.",
+                       s(function=st("function", True), offset=it("skip this many reference sites"))),
+        "pe_data_refs": ("Original data operands with section, address and quoted string or hex previews.",
+                         s(function=st("function", True), offset=it("skip this many reference sites"))),
         "get_class": ("C++ class layout found in the game's code: fields by offset and virtual functions by slot. "
                       "Give a vtable address or one of its functions; empty lists the classes.",
                       s(what=st("vtable address, or a virtual function / constructor"))),
@@ -450,6 +466,12 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
         "try_compiler": ("Compile a function's C with another compiler and flags, recording nothing: test before suggesting.",
                          s(function=st("function", True), compiler=st("toolchain id", True), flags=st("flags"),
                            source=st("the C (default: the best attempt)"))),
+        "compare_compilers": ("Rank the assigned settings and up to two alternative compiler IDs on the same saved C "
+                              "in a ROM project. Use try_compiler for the full diff of a promising profile.",
+                              s(function=st("function", True),
+                                compilers={"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 2,
+                                           "description": "alternative IDs from project_info", "req": True},
+                                flags=st("flags for the alternatives, or empty for defaults"), source=st("optional C"))),
         "search_notes": ("Search notes.", s(query=st("text", True))),
         "find_similar": ("Functions that look like this one, matched ones first, with the best one's source.",
                          s(function=st("function", True), limit=it("how many"))),

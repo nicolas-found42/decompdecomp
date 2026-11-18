@@ -326,10 +326,10 @@ def _function_rows(net, project_id: int, *, sources: bool) -> list:
     if sources:
         return net.store.all(
             "SELECT name, vram, size, status, matched_source, matched_agent_id, best_source, best_score, "
-            f"best_agent_id, readable, meta, {exists}FROM functions WHERE project_id=? AND size > 0 ORDER BY vram",
+            f"best_agent_id, readable, meta, asm_verification, {exists}FROM functions WHERE project_id=? AND size > 0 ORDER BY vram",
             project_id)
     return net.store.all(
-        "SELECT name, vram, size, status, matched_agent_id, best_score, best_agent_id, readable, meta, "
+        "SELECT name, vram, size, status, matched_agent_id, best_score, best_agent_id, readable, meta, asm_verification, "
         f"{exists}FROM functions WHERE project_id=? AND size > 0 ORDER BY vram", project_id)
 
 
@@ -369,6 +369,7 @@ def _manifest_from_rows(net, proj, cfg: dict, rows, folder: Path) -> tuple[dict,
         # what's set aside and why: agents' verdicts that no C makes it, the user's, a boundary report's leftover
         # (the import sets aside again what it finds by itself)
         "set_aside": [{"name": r["name"], "vram": r["vram"],
+                       **({"asm_verification": json.loads(r["asm_verification"])} if r["asm_verification"] else {}),
                        **{k: v for k, v in json.loads(r["meta"] or "{}").items() if k in SET_ASIDE_META}}
                       for r in rows if r["status"] == "asm"],
     }
@@ -500,7 +501,7 @@ def _render_partial(net, proj, folder: Path, names: list[str], *, headers: bool 
             chunk = names[start:start + 400]
             selected = net.store.all(
                 "SELECT name, vram, size, status, matched_source, matched_agent_id, best_source, best_score, "
-                "best_agent_id, readable, meta, "
+                "best_agent_id, readable, meta, asm_verification, "
                 "CASE WHEN matched_source IS NOT NULL AND matched_source != '' THEN 1 ELSE 0 END AS has_matched, "
                 "CASE WHEN best_source IS NOT NULL AND best_source != '' THEN 1 ELSE 0 END AS has_best "
                 f"FROM functions WHERE project_id=? AND size > 0 AND name IN ({','.join('?' * len(chunk))})",
@@ -802,6 +803,16 @@ def _apply_context(net, slug: str, folder: Path, manifest: dict, log,
                 why = {k: v for k, v in item.items() if k in SET_ASIDE_META}
                 db.execute("UPDATE functions SET status='asm', meta=? WHERE id=?",
                            (json.dumps({**json.loads(row["meta"] or "{}"), **why}), row["id"]))
+    saved_receipts = {(r["name"], r["vram"]): r["asm_verification"] for r in manifest.get("set_aside", [])
+                      if isinstance(r.get("asm_verification"), dict)}
+    if saved_receipts and (verify := net.console(proj).verify_assembly) and slug not in net.links and slug not in net.rooms:
+        # A progress folder can be edited or shared. Only freshly assembled bytes can reinstate its proof.
+        for r in net.store.all("SELECT name,vram,asm_verification FROM functions WHERE project_id=? "
+                               "AND asm_verification IS NOT NULL", pid):
+            if saved_receipts.get((r["name"], r["vram"])) == json.loads(r["asm_verification"]):
+                saved_receipts.pop((r["name"], r["vram"]))
+        if saved_receipts:
+            verify(net, proj, log, saved=saved_receipts)
     by_name = {r["name"]: r for r in net.store.all("SELECT name,vram FROM functions WHERE project_id=?", pid)}
     return by_name, manifest.get("functions") or {}
 

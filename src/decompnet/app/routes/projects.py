@@ -36,7 +36,7 @@ def register(app: App) -> None:
                     result = fn(slug, request, data)
                     project = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
                     if (request.method == "POST" and project and not net.project_missing(project)
-                            and request.url.path not in ("/api/compiler/test-default", "/api/compiler/cleanup")):
+                            and request.url.path not in ("/api/compiler/test-default", "/api/compiler/cleanup", "/api/ps2-analysis")):
                         net.progress.sync(slug, force=True)
                     return result
                 return JSONResponse(await call(perform))
@@ -222,6 +222,21 @@ def register(app: App) -> None:
             pass  # not yours (any more): nothing to give back
         return {"ok": True}
 
+    def p_ps2_analysis(slug, request, data):
+        from ...consoles.ps2 import analysis, analysis_tools
+        proj = net.project_row(slug)
+        key = data.get("tool")
+        if key not in analysis_tools.TOOLS:
+            raise ValueError("Unknown PS2 analysis tool.")
+        return {"job": jobs.start(analysis_tools.TOOLS[key][0], lambda log: analysis.run(net, proj, key, data, log))}
+
+    def p_verify_assembly(slug, request, data):
+        proj = net.project_row(slug)
+        verify = net.console(proj).verify_assembly
+        if not verify or not net.is_rom(proj) or slug in net.rooms or slug in net.links:
+            raise NetworkError("Choose a standalone ROM project with an SDK assembly verifier.")
+        return {"job": jobs.start("Verify SDK assembly", lambda log: verify(net, proj, log))}
+
     def p_recheck(slug, request, data):
         """Check again: the project looked at with what this version knows (Core.recheck), in the background."""
         return {"job": jobs.start("recheck", lambda log: {
@@ -301,6 +316,7 @@ def register(app: App) -> None:
         return net.overview(slug)
 
     def p_deep_permuter(slug, request, data):
+        """Keep long searches behind the app window's explicit Start search action."""
         if request.method == "GET":
             name = request.query_params.get("name", "")
             latest = next((job for job in reversed(list(jobs.jobs.values())) if job["kind"] == "deep-permuter"
@@ -309,6 +325,7 @@ def register(app: App) -> None:
         name = str(data.get("name", ""))
         minutes = data.get("minutes", 10)
         variants = data.get("variants", 500)
+        high_performance = deep_permuter.trial_width(net.fork_slug(slug)) == deep_permuter.HIGH_PERFORMANCE_WORKERS
         with jobs._lock:
             running = [job for job in jobs.jobs.values() if job["kind"] == "deep-permuter"
                        and job["state"] == "running"]
@@ -317,12 +334,15 @@ def register(app: App) -> None:
                 return {"job": active["id"]}
             if any(job.get("slug") == slug for job in running):
                 raise NetworkError("Another function is being deep permuted in this project; stop it or wait for it to finish.")
+            if (high_performance and running) or any(job.get("high_performance") for job in running):
+                raise NetworkError("High performance runs one Deep permuter search at a time. Wait for the active search to finish.")
             if len(running) >= deep_permuter.max_searches():
                 raise NetworkError(f"{len(running)} deep {'search is' if len(running) == 1 else 'searches are'} "
                                    "already running, as many as this computer runs at once. Wait for one to finish.")
             deep_permuter.validate(net, slug, name, minutes, variants)
-            jid = jobs.start("deep-permuter", lambda log: deep_permuter.run(net, slug, name, minutes, variants, log))
-            jobs.jobs[jid].update({"slug": slug, "function": name})
+            jid = jobs.start("deep-permuter", lambda log: deep_permuter.run(net, slug, name, minutes, variants, log),
+                             cancelled="Deep permuter was cancelled.")
+            jobs.jobs[jid].update({"slug": slug, "function": name, "high_performance": high_performance})
         return {"job": jid}
 
     def p_save(slug, request, data):
@@ -354,6 +374,8 @@ def register(app: App) -> None:
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]),
+        "/api/ps2-analysis": (p_ps2_analysis, ["POST"]),
+        "/api/verify-assembly": (p_verify_assembly, ["POST"]),
         "/api/recheck": (p_recheck, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),
         "/api/deep-permuter": (p_deep_permuter, ["GET", "POST"]),

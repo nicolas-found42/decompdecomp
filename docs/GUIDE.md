@@ -109,6 +109,7 @@ decompdecomp helps with these steps:
 | **Editor** | Each function has an editor. Write C, push Ctrl+Enter and look at the diff. |
 | **Suggestions** | Agents can suggest a different compiler, for the full game or for address ranges. decompdecomp tests each suggestion first. You apply it with one click, or let proven suggestions apply automatically (a setting of each game). |
 | **Flag search** | `search_flags` builds a function again with each flag of its compiler changed, one at a time (up to 12 builds), and says which change gets closer. MIPS for now. |
+| **Compiler comparison** | `compare_compilers` builds the same saved C with its assigned settings and up to two alternative compilers. It ranks the results in one helper tool call. Use `try_compiler` to read the full diff for a promising profile. |
 | **Shared header** | Structs and prototypes go into one header. decompdecomp accepts a change only if all matches stay matches. |
 | **Safe names** | Matches use addresses. A new name for a function or data cannot break a match. |
 | **Look-alikes** | `find_similar` compares instruction sequences across the full game and finds copied and inlined code. |
@@ -134,6 +135,7 @@ decompdecomp helps with these steps:
 | **Kimi Code** | Uses the npm CLI with a private configuration and app MCP tools. |
 | **ZCode CLI** | The same, with Z.ai's GLM models. It reads the prompt from a file it attaches. |
 | **Oh My Pi** | The same, with each provider that you set up: Anthropic, OpenAI, z.ai, Mistral and more. |
+| **Muse Code** | Uses your signed-in Meta subscription and offers Muse Ember and Muse Wonder. Follow the sign-in command on the app's Agents page. |
 
 The app starts each helper itself, from **Start agents** in the project's header. A helper that stops starts again
 by itself. On a usage limit it waits until the limit resets. Five fast failures in a row pause it, and the app says
@@ -252,6 +254,8 @@ Please [report problems](https://github.com/n-delic/decompdecomp/issues). The st
 | PlayStation 4 | Ghidra, or an explicit function map selected with the decrypted executable. Strict objdiff projects; encrypted SELF/PKG, PRX modules and full-game relinking remain planned. |
 | Windows PC | [Ghidra](https://github.com/NationalSecurityAgency/ghidra). decompdecomp cuts each function out of the .exe and the game's own DLLs into a project for Visual C++ and objdiff (`consoles/pc/scratch.py`). |
 
+**PS2 analysis.** Open **Compilers & tools → PS2**, open a tool, select a project and click **Run analysis**. Ghidra Emotion Engine shows a pseudocode draft for a hexadecimal function address. The PS2Recomp scanner lists possible SDK symbols in the boot ELF. PS2 symbol transfer compares those project functions with a second PS2 ELF. Choose the comparison file or place it at `analysis-inputs/CORE.elf` inside the project. Both searches report candidates for inspection. They leave names, claims and byte-match records intact. Agents can run the same tools with `ps2_decompile`, `ps2_sdk_symbols`, and `ps2_symbol_transfer`. Agents choose companion ELFs by filename from the project's `analysis-inputs` folder. Use `project_info` to list compiler profiles and `try_compiler` to test a candidate with one. The scanner installer needs a system C++17 compiler. The extension uses the app's pinned Ghidra 12.1.4 and Java 21 or newer.
+
 **C and C++.** GameCube, Wii, PS2 and Windows PC games are often C++. On these platforms, agents can write
 classes and methods, and decompdecomp changes the C++ names back to the names of the game. N64 games use
 C. Public decomps use the language of their project.
@@ -346,7 +350,7 @@ uv run pytest              # the tests
 | :-- | :-- |
 | `src/decompnet/rom/` | ROM mode: reading, splitting with splat, symbols, the matcher (`match.py`) and the export. |
 | `src/decompnet/app/` | The app: `engine/` (ROM projects, a module per topic), `forkengine.py` (forks), `tools.py` (MCP tools), `agents.py` (starting and restarting helpers), `server.py` and `routes/` (the GUI's API, a module per part of the app), `collab.py` (rooms), `window.py` and `gtkwindow.py` (its own window), `tray.py` (the tray icon), `edition.py` (development copy or release), `static/` (GUI; its script is `static/js/`, a file per part), `guide/` (guides for agents). |
-| `src/decompnet/agents/` | A module per agent (`claude.py`, `codex.py`, `antigravity.py`, `opencode.py`, `cursor.py`, `kimi.py`, `zcode.py`, `ohmy.py`, `api.py`): how a session starts, how to read what it prints, its models. |
+| `src/decompnet/agents/` | A module per agent (`claude.py`, `codex.py`, `antigravity.py`, `opencode.py`, `cursor.py`, `kimi.py`, `zcode.py`, `ohmy.py`, `muse.py`, `api.py`): how a session starts, how to read what it prints, its models. |
 | `src/decompnet/consoles/` | A folder per console (`n64/`, `ps1/`, `ps2/`, `gc_wii/`, `pc/`): its facts, its importer (`gc_wii/scratch.py` and `pc/scratch.py` start a project from scratch), its guides for agents. |
 | `src/decompnet/forks/` | Fork mode: forks by repository address, project setup, objdiff, drafts and linked files. |
 | `src/decompnet/network.py` | Claims, attempts, notes and the shared header. |

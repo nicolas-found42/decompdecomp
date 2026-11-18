@@ -401,3 +401,33 @@ def test_a_cpp_programs_types_compile_as_the_header_in_c_and_cpp(toolchain, tmp_
         result = compile_source(compiler_config(tmp_path, {"compiler": {"toolchain": toolchain, "flags": ["-O2"]}}),
                                 base, source)
         assert result.ok and result.language == language, result.log
+
+
+def test_ps2_analysis_uses_verified_program_and_reports_candidates(tmp_path, monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+
+    from decompnet.consoles.ps2 import analysis, analysis_tools
+
+    code = b'\x08\x00\xe0\x03' + bytes(4)
+    binary = _elf([('.text', 1, 6, 0x01000000, code, 0)])
+    (tmp_path / 'game.elf').write_bytes(binary)
+    rom = {'program': 'game.elf', 'file': 'image.bin', 'sha1': hashlib.sha1(binary).hexdigest()}
+    net = SimpleNamespace(console=lambda p: SimpleNamespace(id='ps2'), is_rom=lambda p: True, cfg=lambda p: {'rom': rom})
+    proj = {'root': str(tmp_path), 'id': 1}
+    monkeypatch.setattr(analysis_tools, 'ready', lambda key: True)
+    (tmp_path / 'sce-scan').touch()
+    monkeypatch.setattr(analysis_tools, 'location', lambda key: tmp_path)
+
+    def scan(args, directory):
+        assert args[-1] == '0x1000000' and args[-2].read_bytes() == code
+        return 'address\tbytes\tname\n1000000\t8\tprobe\n'
+    monkeypatch.setattr(analysis, 'run_command', scan)
+    assert analysis.run(net, proj, 'sce-scan', {}, print)['summary'] == '1 SDK symbol candidates'
+    with pytest.raises(ValueError, match='different executable'):
+        analysis.run(net, proj, 'transfer', {'companion': str(tmp_path / 'game.elf')}, print)
+    with pytest.raises(ValueError, match='hexadecimal'):
+        analysis.run(net, proj, 'r5900', {'address': 'no address'}, print)
+    rom['sha1'] = 'different'
+    with pytest.raises(ValueError, match='differs'):
+        analysis.run(net, proj, 'sce-scan', {}, print)

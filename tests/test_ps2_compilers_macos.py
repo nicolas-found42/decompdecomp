@@ -12,7 +12,8 @@ from decompnet.compiler import compile_source, run_in
 from decompnet.elfobj import extract_function
 from decompnet.project import compiler_config
 
-SONY = ('ee-gcc-2.96', 'ee-gcc-2.9-991111', 'ee-gcc-3.2')
+SONY = ('ee-gcc-2.96', 'ee-gcc-2.9-991111', 'ee-gcc-3.2', 'ee-gcc-2.9-991111-01',
+        'ee-gcc-2.9-as296', 'ee-gcc-3.2-040921', 'ee-gcc-2.96-as2004')
 SN = ('ee-gcc-2.95.2', 'ee-gcc-2.95.3')
 MW = ('mwcps2-2.3.3', 'mwcps2-3.0.1')
 
@@ -75,7 +76,7 @@ def test_real_mac_ps2_engine_and_export_compile(tmp_path, tid):
     # Hand-encoded return a+b: GCC 3.2 moves the result through a0; CodeWarrior
     # adds before returning, leaving a nop in the delay slot.
     code = ('211085000800e00300000000' if tid in MW else
-            '212085000800e0032d108000' if tid == 'ee-gcc-3.2' else '0800e00321108500')
+            '212085000800e0032d108000' if tid in ('ee-gcc-3.2', 'ee-gcc-3.2-040921') else '0800e00321108500')
     target = bytes.fromhex(code)
     (tmp_path / 'homemade.bin').write_bytes(target)
     flags = toolchains.get(tid).flags

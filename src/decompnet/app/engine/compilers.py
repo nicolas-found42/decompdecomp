@@ -29,6 +29,7 @@ FLAG_EXTRAS = {"gcc": ("-fno-strength-reduce", "-fno-schedule-insns"),
 SMALL_DATA_SIZES = (0, 8)
 MAX_FLAG_VARIANTS = 12
 FLAGS_SHOWN = 6
+MAX_COMPILER_ALTERNATIVES = 2
 
 
 class CompilerMixin:
@@ -697,6 +698,51 @@ class CompilerMixin:
             return (f"{what}: MATCHES the game byte for byte. Suggest it: suggest(compiler=\"{tc}\", flags=\"{' '.join(flag_list)}\", "
                     f"function=\"{fn['name']}\", ranges=<the address range it built>, source=<this C>)")
         return f"{what}: score {d.score} ({d.percent:.1f}%), not a match\n{d.render(context=1, max_rows=40)}"
+
+    def compare_compilers(self, slug: str, function: str, compilers: list[str], flags: str = "",
+                          source: str = "") -> str:
+        """Rank a few plausible compiler profiles on one C candidate before asking for a full diff."""
+        self._rom_only(slug, "compiler comparison")
+        if (not isinstance(compilers, list) or not 1 <= len(compilers) <= MAX_COMPILER_ALTERNATIVES
+                or any(not isinstance(name, str) or not name.strip() for name in compilers)):
+            raise NetworkError("Choose one or two compiler IDs from project_info.")
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        fn = self._function(function, slug)
+        source = source.strip() or self._source_of(fn) or fn["matched_source"]
+        if not source:
+            raise NetworkError(f"{fn['name']} has no attempt yet: pass the C as source")
+        own = compiler_for(cfg, fn["vram"])
+        baseline = own["toolchain"], tuple(own["flags"])
+        profiles = [baseline]
+        for name in compilers:
+            toolchain = self._toolchain_named(cfg, name)
+            options = flags.split() or (own["flags"] if toolchain == own["toolchain"]
+                                        else consoles.default_flags(cfg, toolchain))
+            profiles.append((toolchain, tuple(options)))
+
+        results = []
+        failed = []
+        for profile in dict.fromkeys(profiles):
+            toolchain, options = profile
+            label = f"{toolchain} {' '.join(options)}".strip()
+            if profile == baseline:
+                label += " (assigned)"
+            exact, diff, problem = self._judge_with(proj, fn, toolchain, list(options), source)
+            if exact:
+                results.append((0, f"- {label}: exact linked match"))
+            elif diff is not None:
+                score = max(1, diff.score)
+                results.append((score, f"- {label}: score {score} ({diff.percent:.1f}%)"))
+            else:
+                diagnostic = next((line for line in reversed(problem.splitlines()) if line.strip()), "")
+                failed.append(f"- {label}: no result" + (f" ({diagnostic.strip()[:200]})" if diagnostic else ""))
+
+        lines = [f"Compiler comparison for {fn['name']} (same C, lower score is better):"]
+        lines.extend(line for _, line in sorted(results, key=lambda result: result[0]))
+        lines.extend(failed)
+        lines.append("Use try_compiler for the full diff of a promising profile or compile_and_diff to submit C.")
+        return "\n".join(lines)
 
     def flag_variants(self, toolchain: str, base: list[str], more: tuple[str, ...] = ()) -> list[list[str]]:
         """The flags worth trying for a function on this compiler: its optimisation levels, small data on and off

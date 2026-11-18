@@ -39,6 +39,35 @@ def app(tmp_path_factory):
 WINDOW = {"User-Agent": f"Mozilla/5.0 AppleWebKit/605.1.15 {window.TOKEN_AGENT}{SECRET}"}
 
 
+def test_project_agents_cannot_start_deep_permuter(tmp_path):
+    from decompnet.app import tools
+
+    internal = tmp_path / ".decomp"
+    internal.mkdir()
+    net = RomNetwork(internal / "decomp.db", tmp_path)
+    with net.store.tx() as db:
+        db.execute("INSERT INTO projects(slug,name,root,config,arch) VALUES(?,?,?,?,?)",
+                   ("test-game", "Test game", str(tmp_path), '{"kind":"rom","platform":"ps2"}', "mips"))
+    mcp, _, security, _ = build(net, internal, PORT, SECRET)
+    app = mcp.streamable_http_app(transport_security=security, host="127.0.0.1")
+    url = f"http://127.0.0.1:{PORT}"
+    desktop = TestClient(app, base_url=url, headers={**WINDOW, "X-Decomp": "1"})
+    connection = desktop.post("/api/manual-mcp", json={"action": "create", "slug": "test-game"}).json()
+    agent = net.authenticate(connection["token"])
+    definitions = desktop.get("/api/manual-mcp", params={"slug": "test-game"}).json()["tools"]
+    assert "deep_permuter" not in {tool["name"] for tool in definitions}
+    assert "deep_permuter" not in {tool["function"]["name"] for tool in api.api_tool_schemas()}
+    args = {"function": "f", "minutes": 1, "variants": 1}
+    assert tools.call(net, agent, "test-game", "deep_permuter", args) == "error: unknown tool 'deep_permuter'"
+
+    agent_client = TestClient(app, base_url=url, headers={
+        "Authorization": f"Bearer {connection['token']}", "X-Decomp": "1",
+    })
+    denied = agent_client.post("/api/deep-permuter", json={"slug": "test-game", "name": "f",
+                                                          "minutes": 1, "variants": 1, "high_performance": True})
+    assert denied.status_code == 401
+
+
 def test_deep_permuter_job_can_be_found_and_stopped_from_the_function(app, monkeypatch):
     from decompnet.app import deep_permuter
 
@@ -89,6 +118,7 @@ def test_deep_searches_are_capped_app_wide_below_the_shared_workers(app, monkeyp
     started, release = threading.Event(), threading.Event()
     monkeypatch.setattr(deep_permuter, "validate", lambda *args: None)
     monkeypatch.setattr(deep_permuter.workers, "WORKERS", 2)
+    monkeypatch.setattr(deep_permuter, "COMPILER_SLOTS", 8)
 
     def run(net, slug, name, minutes, variants, log):
         started.set()
@@ -108,6 +138,47 @@ def test_deep_searches_are_capped_app_wide_below_the_shared_workers(app, monkeyp
         if client.get("/api/job", params={"id": jid}).json()["state"] != "running":
             break
         time.sleep(.01)
+
+
+def test_rom_deep_search_defaults_to_ten_workers_and_runs_alone(app, monkeypatch):
+    from decompnet.app import deep_permuter
+
+    client, net, _ = app
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(deep_permuter, "validate", lambda *args: None)
+    monkeypatch.setattr(net, "fork_slug", lambda slug: slug if slug == "fork" else None)
+    monkeypatch.setattr(deep_permuter, "COMPILER_SLOTS", 12)
+
+    def post(slug, **extra):
+        return client.post("/api/deep-permuter", headers={"X-Decomp": "1"},
+                           json={"slug": slug, "name": "f", **extra})
+
+    def run(net, slug, name, minutes, variants, log):
+        assert deep_permuter.trial_width(net.fork_slug(slug)) == (1 if slug == "fork" else 10)
+        started.set()
+        assert release.wait(4)
+        return {"function": name}
+
+    monkeypatch.setattr(deep_permuter, "run", run)
+    for slug, expected, extra in [("fork", False, {"high_performance": True}),
+                                  ("rom", True, {}), ("rom-old-client", True, {"high_performance": False})]:
+        started.clear()
+        release.clear()
+        try:
+            job = post(slug, **extra).json()["job"]
+            assert started.wait(1)
+            found = client.get("/api/deep-permuter", params={"slug": slug, "name": "f"}).json()
+            assert found["last"]["high_performance"] is expected
+            denied = post("another-rom")
+            assert denied.status_code == 400 and "one Deep permuter search" in denied.json()["error"]
+        finally:
+            release.set()
+        for _ in range(100):
+            state = client.get("/api/job", params={"id": job}).json()["state"]
+            if state != "running":
+                break
+            time.sleep(.01)
+        assert state == "done"
 
 
 def test_opening_a_project_recovers_its_own_successful_save_destination(app, tmp_path):

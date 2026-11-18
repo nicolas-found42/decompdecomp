@@ -1,5 +1,5 @@
 """The connector: how decompdecomp talks to a helper agent. Every agent the app can start is a module in this folder
-(agents/claude.py, codex.py, cursor.py, kimi.py, antigravity.py, opencode.py, zcode.py, ohmy.py, api.py) that makes
+(agents/claude.py, codex.py, cursor.py, kimi.py, antigravity.py, opencode.py, zcode.py, ohmy.py, muse.py, api.py) that makes
 an `Agent` below and fills in its parts; the list at the end of this file registers them. The rest of the app (the
 helpers' manager in
 app/agents.py, the routes, the GUI) asks the agent of a helper, `agents.get(kind)`, and never compares agent names.
@@ -173,7 +173,7 @@ class Agent:
         if not run:
             return []
         try:
-            res = subprocess.run(cli_argv([path, *self.models_args]), capture_output=True, text=True, encoding="utf-8",
+            res = subprocess.run(cli_argv([path, *self.model_catalog_args(path)]), capture_output=True, text=True, encoding="utf-8",
                                  errors="replace", stdin=subprocess.DEVNULL, timeout=MODELS_TIMEOUT, creationflags=NO_WINDOW)
             lines = [line.strip() for line in res.stdout.splitlines()]
         except (OSError, subprocess.TimeoutExpired):
@@ -181,6 +181,9 @@ class Agent:
         out = self.read_models(lines)[:MODELS_LISTED]
         _models[self.id] = (time.time(), out)
         return out
+
+    def model_catalog_args(self, path: str) -> tuple[str, ...]:
+        return self.models_args
 
     def read_models(self, lines: list[str]) -> list[dict]:
         """The models in what `<path> <models_args>` printed, a line each: [{"id", "name", "note"}]."""
@@ -347,12 +350,13 @@ def _registry() -> list[Agent]:
     from .codex import CODEX
     from .cursor import CURSOR
     from .kimi import KIMI
+    from .muse import MUSE
     from .ohmy import OMP
     from .opencode import OPENCODE
     from .zcode import ZCODE
 
     # the order the Agents page lists them in (the launcher puts the recommended one first)
-    return [CLAUDE, CODEX, CURSOR, KIMI, ANTIGRAVITY, OPENCODE, ZCODE, OMP, API]
+    return [CLAUDE, CODEX, CURSOR, KIMI, ANTIGRAVITY, OPENCODE, ZCODE, OMP, MUSE, API]
 
 
 AGENTS: list[Agent] = _registry()

@@ -607,6 +607,17 @@ $("reimportBtn").onclick = async () => {
 
 /* Save your progress (app/saves.py): progress/ stays authoritative and follows local work and git contributions;
    this saves now, or to a folder of the user's choice (a USB stick, a git checkout). */
+$("verifyAssembly").onclick = async () => {
+  const button = $("verifyAssembly");
+  button.disabled = true;
+  try {
+    const { job } = await api("/api/verify-assembly", { method: "POST", body: { slug: S.slug } });
+    const result = await followJob(job, null);
+    toast(`Verified ${plural(result.verified, "new assembly function")}. Skipped ${result.claimed} claimed.`, "match");
+    await refreshMap(true);
+  } catch (e) { toast(esc(e.message), "err"); } finally { button.disabled = false; }
+};
+
 $("recheckBtn").onclick = async () => {
   const b = $("recheckBtn");
   b.disabled = true;

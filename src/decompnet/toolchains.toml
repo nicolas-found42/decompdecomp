@@ -271,6 +271,74 @@ url = "https://github.com/decompme/compilers/releases/download/compilers/ee-gcc2
 sha256 = "99cb5db603cd985b50fc6851157020ad69489f2227309ccf825bd43ac7bc19dd"
 platforms = ["linux-x86_64"]
 
+["ee-gcc-2.9-991111-01"]
+linux_vm = true
+cplusplus = true
+name = "EE-GCC 2.9 (991111-01)"
+platform = "PS2"
+arch = "mipsel"
+license = "GPL-2.0"
+source = "decompme/compilers release 'compilers'"
+description = "The 991111-01 SDK compiler, which emits floating-point divide padding in SDK timer code."
+requires = ["runtime-i386"]
+cc = ["env", "QEMU_RESERVED_VA=1073741824", "{tc}/bin/ee-gcc", "-c"]
+flags = ["-O2", "-G0", "-fno-exceptions"]
+[["ee-gcc-2.9-991111-01".parts]]
+url = "https://github.com/decompme/compilers/releases/download/compilers/ee-gcc2.9-991111-01.tar.xz"
+sha256 = "ed684fd98f89d36b0121caab311052089103e3b36241fcef4338cc9ea41c75b8"
+platforms = ["linux-x86_64"]
+
+["ee-gcc-2.9-as296"]
+linux_vm = true
+cplusplus = true
+name = "EE-GCC 2.9 (991111) with the EE-GCC 2.96 assembler"
+platform = "PS2"
+arch = "mipsel"
+license = "GPL-2.0"
+source = "decompme/compilers release 'compilers'"
+description = "The 991111 compiler with the 2.96 assembler's delay-slot scheduling for SDK code."
+requires = ["runtime-i386", "ee-gcc-2.96"]
+cc = ["env", "QEMU_RESERVED_VA=1073741824", "{tc}/bin/ee-gcc", "-c", "-B{tc:ee-gcc-2.96}/ee/bin/", "-Wa,-O2,-mabi=eabi"]
+flags = ["-O2", "-G0", "-fno-exceptions"]
+[["ee-gcc-2.9-as296".parts]]
+url = "https://github.com/decompme/compilers/releases/download/compilers/ee-gcc2.9-991111.tar.xz"
+sha256 = "99cb5db603cd985b50fc6851157020ad69489f2227309ccf825bd43ac7bc19dd"
+platforms = ["linux-x86_64"]
+
+["ee-gcc-3.2-040921"]
+linux_vm = true
+cplusplus = true
+name = "EE-GCC 3.2 (040921)"
+platform = "PS2"
+arch = "mipsel"
+license = "GPL-2.0"
+source = "decompme/compilers release 'compilers'"
+description = "The 040921 release of Sony's Emotion Engine compiler and assembler."
+requires = ["runtime-i386"]
+cc = ["env", "QEMU_RESERVED_VA=1073741824", "{tc}/bin/ee-gcc", "-c"]
+flags = ["-O2", "-G0"]
+[["ee-gcc-3.2-040921".parts]]
+url = "https://github.com/decompme/compilers/releases/download/compilers/ee-gcc3.2-040921.tar.xz"
+sha256 = "8c60ca7482523190e999524a7e4de2379dcf7ffee543c1b5663bfdf6a80ebf0f"
+platforms = ["linux-x86_64"]
+
+["ee-gcc-2.96-as2004"]
+linux_vm = true
+cplusplus = true
+name = "EE-GCC 2.96 with the 2004 assembler"
+platform = "PS2"
+arch = "mipsel"
+license = "GPL-2.0"
+source = "decompme/compilers release 'compilers'"
+description = "The 2.96 compiler with the 040921 assembler's unaligned-access macro expansion."
+requires = ["runtime-i386", "ee-gcc-3.2-040921"]
+cc = ["env", "QEMU_RESERVED_VA=1073741824", "{tc}/bin/ee-gcc", "-c", "-B{tc:ee-gcc-3.2-040921}/ee/bin/", "-Wa,-EL,-march=r5900,-mabi=eabi"]
+flags = ["-O2", "-G8"]
+[["ee-gcc-2.96-as2004".parts]]
+url = "https://github.com/decompme/compilers/releases/download/compilers/ee-gcc2.96.tar.xz"
+sha256 = "0590d2ca9da8f5903889d66761220d14b47a8d14ba987ca53db84a1650a1fd0a"
+platforms = ["linux-x86_64"]
+
 ["ee-gcc-2.95.2"]
 cplusplus = true
 name = "EE-GCC 2.95.2 (SN Systems 273a)"

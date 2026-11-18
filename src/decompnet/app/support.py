@@ -101,7 +101,7 @@ class Jobs:
         self.log_path = log_path
         self.logger = file_log(log_path) if log_path else logging.getLogger("decompdecomp")
 
-    def start(self, kind: str, fn) -> str:
+    def start(self, kind: str, fn, *, cancelled: str = "Opening the saved project was cancelled.") -> str:
         jid = uuid.uuid4().hex[:JOB_ID_CHARS]
         job = {"id": jid, "kind": kind, "state": "running", "log": [], "result": None, "error": None,
                "progress": None, "t": time.time()}
@@ -117,7 +117,7 @@ class Jobs:
 
         def check_cancel() -> None:
             if cancel.is_set():
-                raise RuntimeError("opening the saved project was cancelled")
+                raise RuntimeError(cancelled)
 
         def progress(value: dict) -> None:
             check_cancel()
@@ -141,7 +141,7 @@ class Jobs:
                 logger.info("job %s %s done in %.0fs", kind, jid, time.time() - job["t"])
             except BaseException as e:  # noqa: BLE001  a job must end, whatever went wrong
                 if cancel.is_set():
-                    job["error"] = "Opening the saved project was cancelled."
+                    job["error"] = cancelled
                     job["state"] = "cancelled"
                     logger.info("job %s %s cancelled", kind, jid)
                     return
@@ -316,10 +316,12 @@ class Settings:
                 "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
 
 
-def session_options(entry: dict) -> dict:
+def session_options(entry: dict, *, effort: str | None = None) -> dict:
     """What a built-in agent session needs from its endpoint."""
     out = {"endpoint": entry.get("id") or "", "provider": entry["provider"], "base_url": entry["base_url"],
            "model": entry["model"], "provider_name": entry["name"]}
+    if effort or entry.get("reasoning_effort"):
+        out["effort"] = effort or entry["reasoning_effort"]
     return out | {k: entry[k] for k in ("api_key", "context_tokens") if entry.get(k)}
 
 

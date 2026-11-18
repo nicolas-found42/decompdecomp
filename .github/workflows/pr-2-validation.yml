@@ -1,26 +1,72 @@
-name: PR 2 Windows timing diagnostic
+name: PR 2 Windows and Apple Silicon retry
 on:
   push:
     branches: [ci/pr-2-validation]
 permissions:
   contents: read
 jobs:
-  timing:
+  windows:
     runs-on: windows-latest
-    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
         with:
           ref: 95a3e266d97fe84a6593b668aa094dfc9373422c
           persist-credentials: false
       - uses: astral-sh/setup-uv@v10.3.0
-      - name: Retry the unchanged one-match save regression on Windows
-        shell: pwsh
+      - run: uv sync
+      - run: uv run ruff check src tests projects
+      - uses: actions/setup-java@v5  # Ghidra runs on a Java 21+ JDK
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Cache Ghidra (again when toolchains.toml changes)
+        uses: actions/cache@v6
+        with:
+          path: ~/AppData/Local/decompnet/toolchains/ghidra
+          key: ghidra-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/decompnet/toolchains.toml') }}
+      - name: Ghidra (on a Mac its decompiler is built), for tests/test_ghidra.py
+        run: uv run python -c "from decompnet import toolchains; toolchains.install('ghidra')"
+      - name: Native Windows and portable regression tests
+        run: uv run pytest -q -rs
+        env:
+          DECOMP_TRAY: "0"
+  macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 95a3e266d97fe84a6593b668aa094dfc9373422c
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv sync --locked
+      - run: uv run ruff check src tests projects
+      - name: Demo linker and object tools
         run: |
-          $failed = 0
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            Write-Host "Run $attempt of 3"
-            uv run pytest -q tests/test_progress_speed.py::test_one_match_changed_writes_its_file_and_the_manifest
-            if ($LASTEXITCODE -ne 0) { $failed++ }
-          }
-          exit $failed
+          brew install llvm lld
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+      - name: Check Intel compiler runtime on Apple Silicon
+        run: |
+          if [ "$(uname -m)" = arm64 ]; then
+            /usr/bin/arch -x86_64 /usr/bin/true
+          fi
+      - name: Free pinned N64 compiler and decompilation tools
+        run: >-
+          uv run python -c "from decompnet import toolchains; [toolchains.install(t) for t in
+          ['gcc-2.7.2-kmc', 'binutils-mips', 'm2c', 'decomp-permuter', 'objdiff-cli']]"
+      - uses: actions/setup-java@v5  # Ghidra runs on a Java 21+ JDK
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Cache Ghidra (again when toolchains.toml changes)
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Application Support/decompnet/toolchains/ghidra
+          key: ghidra-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/decompnet/toolchains.toml') }}
+      - name: Ghidra (on a Mac its decompiler is built), for tests/test_ghidra.py
+        run: uv run python -c "from decompnet import toolchains; toolchains.install('ghidra')"
+      - name: Native WebKit and portable regressions, including N64 demo matching and rebuild
+        run: uv run pytest -q -rs
+        env:
+          DECOMP_TEST_COCOA: "1"
+          DECOMP_TRAY: "0"

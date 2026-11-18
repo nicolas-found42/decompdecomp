@@ -6,6 +6,8 @@ import json
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -54,6 +56,47 @@ def test_reads_go_on_while_a_write_waits(tmp_path):
     done.set()
     writer.join(5)
     assert store.one("SELECT value FROM settings WHERE key='a'")["value"] == "2"
+
+
+def test_rename_trial_symbols_stay_in_the_regression_worker_and_changed_matches_abort(tmp_path, monkeypatch):
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    pid = tiny_game(net)["id"]
+    owner, _ = net.local_agent("you")
+    with net.store.tx() as db:
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,'old_name',0x100000,16,'func')",
+                   (pid,))
+        db.execute("UPDATE functions SET name='old_name',status='matched',matched_source='old_name' "
+                   "WHERE project_id=? AND name='func_0'",
+                   (pid,))
+    checking, proceed = threading.Event(), threading.Event()
+
+    def compile_trial(*args):
+        assert net.symbols(pid).resolve("sdk_name") == 0x100000
+        assert net.symbols(pid).resolve("old_name") is None
+        checking.set()
+        assert proceed.wait(5)
+        return SimpleNamespace(ok=True, obj=None)
+
+    monkeypatch.setattr(net, "_compile", compile_trial)
+    monkeypatch.setattr(net, "_evaluate", lambda *args: (True, True, []))
+    with ThreadPoolExecutor(1) as pool:
+        rename = pool.submit(net.rename_symbols, owner, "game", [("old_name", "sdk_name")])
+        try:
+            started = checking.wait(5)
+            if not started:
+                rename.result(timeout=1)
+            assert started
+            assert net.symbols(pid).resolve("old_name") == 0x100000
+            assert net.symbols(pid).resolve("sdk_name") is None
+            with net.store.tx() as db:
+                db.execute("UPDATE functions SET matched_source='new source' WHERE project_id=? AND name='old_name'",
+                           (pid,))
+        finally:
+            proceed.set()
+        with pytest.raises(NetworkError, match="project changed during the rename check"):
+            rename.result(timeout=5)
+    assert net._function("old_name", "game")["matched_source"] == "new source"
+    assert net.symbols(pid).resolve("sdk_name") is None
 
 
 def test_a_read_inside_a_transaction_sees_what_it_wrote(tmp_path):
@@ -273,7 +316,7 @@ def test_the_counts_marks_follow_meta_and_come_to_an_older_database_once(tmp_pat
                              "DROP INDEX idx_functions_tally; DROP INDEX idx_functions_map; "
                              "ALTER TABLE functions DROP COLUMN aside_mark; "
                              "ALTER TABLE functions DROP COLUMN gone_mark")
-    store.conn.close()
+    store.close()
     assert marks(Store(tmp_path / "app.db")) == {"lib": ("the C runtime", None), "own": (None, "1"), "odd": (None, None)}
 
 

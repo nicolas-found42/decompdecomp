@@ -390,6 +390,9 @@ async function renderProjectSettings(keepRemoved = false) {
   if (!ov) return;
   if (!keepRemoved) S.removedParts = [];  // a Removed part stays only for the remove that made it, not the next redraw
   renderSaveLocation(ov);
+  loadSdkLibraries(ov);
+  $("agentBackgroundJobsRow").hidden = !ov.can_manage_background_jobs;
+  $("agentBackgroundJobs").checked = !!ov.agent_background_jobs;
   const fork = ov.kind === "fork";
   $("installedCompilerTest").hidden = fork;
   $("reimportGame").hidden = fork && !ov.reimports;  // (a PC project analyses its program again)
@@ -417,6 +420,20 @@ async function renderProjectSettings(keepRemoved = false) {
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
   renderScope(ov);
 }
+
+$("agentBackgroundJobs").onchange = async event => {
+  const input = event.target, enabled = input.checked, slug = S.slug;
+  input.disabled = true;
+  try {
+    await api("/api/project-background-jobs", { method: "POST", body: { slug, enabled } });
+    if (S.slug === slug) S.ov.agent_background_jobs = enabled;
+  } catch (error) {
+    if (S.slug === slug) input.checked = !enabled;
+    toast(error.message, "error");
+  } finally {
+    input.disabled = false;
+  }
+};
 
 /* What the project covers (forks/project.py SCOPES): the game's own code, with the library and middleware code its
    import recognised left out of agents' work and progress, or the whole program. Shown where there's such code. */

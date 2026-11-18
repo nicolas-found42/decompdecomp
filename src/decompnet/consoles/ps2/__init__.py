@@ -55,7 +55,7 @@ class PlayStation2(Console):
         Compiler("mwcps2-3.0.1", "CodeWarrior PS2 3.0.1", "PlayStation 2 games built with CodeWarrior (2002-2005, "
                  "proprietary)", guess="MWCPS2-3"),
     )
-    kits = ("own-ps2",)  # another build of one of its compilers, the user's (kits/owncompiler.py)
+    kits = ("own-ps2", "ps2-libraries")
     guides = ("mips", "ps2")
     compiler_guide = "ps2"
     m2c = "mipsee-gcc"  # m2c has no CodeWarrior MIPS target: the EE one reads its code as well
@@ -166,6 +166,7 @@ class PlayStation2(Console):
     def on_start(self, net, slug: str, log=print) -> None:
         name_kernel_calls(net, slug, log=log)  # projects imported before their kernel calls were named at import
         self.suggest_object_compilers(net, slug)
+        self.library_lookup.maybe_refresh(net, net.project_row(slug))
 
     def suggest_object_compilers(self, net, slug: str) -> None:
         """A project imported before its program's object files were read (elf.object_compilers), or by an older
@@ -219,6 +220,11 @@ class PlayStation2(Console):
     def verify_assembly(self, net, proj, log=print, *, saved=None):
         from . import ps2sdk
         return ps2sdk.verify(net, proj, log, saved=saved)
+
+    @property
+    def library_lookup(self):
+        from . import library_lookup
+        return library_lookup
 
     def asm_reason(self, code: bytes) -> str | None:
         return mips.asm_reason(code, False, eabi=True, cop2="VU0")

@@ -631,6 +631,7 @@ class Console:
         return [c.id for c in self.compilers if c.id in reg and reg[c.id].supported]
 
     verify_assembly = None  # consoles with reproducible SDK assembly provide the verifier
+    library_lookup = None  # consoles that can compare their owner's SDK archives with imported functions
 
     def project_facts(self) -> dict:
         """What a project's page and its line in the project list say about its console."""

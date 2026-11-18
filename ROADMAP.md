@@ -27,6 +27,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | R5900 decompiler, SDK signatures and cross-ELF symbol candidates in the desktop and agent tools | — | — | ✓ | — | — | — | — | — | — | — | — | — |
 | Original DLL imports, linker thunks and referenced data in helper briefs and tools | — | — | — | — | — | — | — | — | ✓ from scratch | — | — | — |
 | Verify assembly against pinned PS2SDK sources | — | — | ✓ | — | — | — | — | — | — | — | — | — |
+| SDK archive candidates and owner-approved names | — | — | ✓ ROM, including imported overlays | — | — | — | — | — | — | — | — | — needs original image mapping |
 | Status | recommended | beta | beta | beta | beta | beta | beta | beta | beta | beta | beta | the project's own |
 | Start from your own copy | ✓ | ✓ | ✓ | ✓ decrypted EBOOT.ELF | ✓ decrypted ELF | ✓ unencrypted or decrypted program and modules (ISO, CSO, CHD) | ✓ ROM | ✓ | ✓ | ✓ default.xbe, .xiso or Redump .iso | ✓ | fork by address |
 | Judge | link · compare | link · compare | link · compare | link · compare | objdiff | link · compare | link · compare | objdiff | objdiff | objdiff | objdiff | objdiff |
@@ -870,6 +871,9 @@ Twins across your games already match library code you matched once. The next st
 libgcc/newlib, built on your computer with the project's compiler (libultra on N64, the PS2 SDK libraries), and try
 them as twins. Library sources are fetched only when you ask, never bundled: SDK code is the console maker's
 copyright.
+
+Local PS2 archive lookup is available for ROM projects. PS2 community builds need a reliable mapping from their
+original linked ELF to the objdiff function catalog before they can use the same name review.
 
 ### Names from another build you own
 

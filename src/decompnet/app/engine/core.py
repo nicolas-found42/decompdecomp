@@ -9,6 +9,8 @@ import json
 import re
 import secrets
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from ... import consoles, hostenv
@@ -29,7 +31,7 @@ class Core(Network):
         super().__init__(db_path, claim_ttl=claim_ttl)
         self.workspace = Path(workspace)
         self._syms: dict[int, SymbolTable] = {}
-        self._sym_override: dict[int, SymbolTable] = {}
+        self._sym_override: ContextVar[tuple[int, SymbolTable] | None] = ContextVar("rename_symbols", default=None)
         self._roms: dict[int, tuple[bytes, list[split.Segment]]] = {}
         self._xrefs: dict[int, dict] = {}
         self._draft_locks: dict[int, threading.Lock] = {}  # function id -> held while its machine draft is made
@@ -180,8 +182,9 @@ class Core(Network):
                                "the shared context: use read_file, search_code and edit_file")
 
     def symbols(self, project_id: int) -> SymbolTable:
-        if project_id in self._sym_override:
-            return self._sym_override[project_id]
+        override = self._sym_override.get()
+        if override and override[0] == project_id:
+            return override[1]
         if project_id not in self._syms:
             rows = self.store.all("SELECT s.name, s.address, s.size, s.kind, f.id IS NOT NULL AS fn FROM symbols s "
                                   "LEFT JOIN functions f ON f.project_id=s.project_id AND f.name=s.name "
@@ -194,6 +197,15 @@ class Core(Network):
                     table.alias(Symbol(r["name"], r["address"], r["size"], r["kind"]))
             self._syms[project_id] = table
         return self._syms[project_id]
+
+    @contextmanager
+    def _using_symbols(self, project_id: int, symbols: SymbolTable):
+        """A rename trial's symbols belong to its compiler check, including checks on pool workers."""
+        token = self._sym_override.set((project_id, symbols))
+        try:
+            yield
+        finally:
+            self._sym_override.reset(token)
 
     def _rom(self, proj) -> tuple[bytes, list[split.Segment]]:
         if proj["id"] not in self._roms:

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from queue import Empty, LifoQueue
 
@@ -363,6 +363,19 @@ class Store:
         self._local = threading.local()  # whether this thread is inside tx()
         self._reader_slots = threading.BoundedSemaphore(MAX_READERS)
         self._readers: LifoQueue[sqlite3.Connection] = LifoQueue()
+        self._closed = False
+
+    def close(self) -> None:
+        """Close the writer and pooled readers before taking the database offline."""
+        with self.lock, ExitStack() as slots:
+            if self._closed:
+                return
+            for _ in range(MAX_READERS):
+                slots.enter_context(self._reader_slots)
+            while not self._readers.empty():
+                self._readers.get_nowait().close()
+            self.conn.close()
+            self._closed = True
 
     def optimize(self) -> None:
         """Refresh the planner's statistics where they went stale (cheap when nothing did): the autosave, hourly."""
@@ -391,6 +404,8 @@ class Store:
     @contextmanager
     def _reader(self):
         with self._reader_slots:
+            if self._closed:
+                raise sqlite3.ProgrammingError("The database is closed.")
             try:
                 conn = self._readers.get_nowait()
             except Empty:

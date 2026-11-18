@@ -214,9 +214,13 @@ class EditMixin:
             if text.startswith("✅"):
                 link.sync()
             return text
+        lookup = self.console(proj).library_lookup
+        if lookup is not None and agent.name != "you" and (proposal := lookup.guard_rename(self, proj, agent, old, new)):
+            return proposal
         return self.rename_symbols(agent, project, [(old, new)], message)
 
-    def rename_symbols(self, agent: Agent, project: str | None, pairs: list[tuple[str, str]], message: str = "") -> str:
+    def rename_symbols(self, agent: Agent, project: str | None, pairs: list[tuple[str, str]], message: str = "",
+                       *, record=None) -> str:
         """Rename several symbols at once (old -> new): the shared headers, matched sources and best attempts
         change together, after one check that every matched function still matches. One rename is the agents'
         rename_symbol; many at once are the PS2 kernel stubs named at import (consoles/ps2/syscalls.py)."""
@@ -266,16 +270,26 @@ class EditMixin:
         renamed_rows = [dict(r) | {"name": new_of.get(r["name"], r["name"])} for r in matched]
         header_for = lambda fn: changed.get(self._effective_unit(fn, units),
                                             current_ctx[self._effective_unit(fn, units)]["header"])
-        self._sym_override[proj["id"]] = trial
-        try:
-            broken = self.regression_test(proj, None, sources=rewritten, only=renamed_rows, header_for=header_for)
-        finally:
-            self._sym_override.pop(proj["id"], None)
+        broken = self.regression_test(proj, None, sources=rewritten, only=renamed_rows, header_for=header_for,
+                                      scope=lambda: self._using_symbols(proj["id"], trial))
         if broken:
             listing = "\n".join(f"- {n}: {why}" for n, why in broken[:10])
             return f"❌ REJECTED: renaming breaks {len(broken)} matched function(s).\n{listing}"
         msg = message.strip() or ", ".join(f"rename {old} -> {new}" for old, new in pairs[:3]) + (" ..." if len(pairs) > 3 else "")
         with self.store.tx() as db:
+            fields = ("id", "name", "matched_source", "target", "relocs", "unit", "vram", "rom_offset")
+            current = db.execute(f"SELECT {','.join(fields)} FROM functions WHERE project_id=? AND status='matched'",
+                                 (proj["id"],)).fetchall()
+            fresh = db.execute("SELECT root,config FROM projects WHERE id=?", (proj["id"],)).fetchone()
+            cfg = self.cfg(proj)
+            updated = self.cfg(fresh) if fresh else {}
+            compile_inputs = ("compiler", "compiler_ranges", "gp", "big_endian", "rom", "segments")
+            if (fresh is None or fresh["root"] != proj["root"] or self._syms.get(proj["id"]) is not syms
+                    or any(cfg.get(k) != updated.get(k) for k in compile_inputs)
+                    or {tuple(r[k] for k in fields) for r in matched} != {tuple(r) for r in current}
+                    or any(self._latest_version(db, proj["id"], unit) != context["version"]
+                           for unit, context in current_ctx.items())):
+                raise NetworkError("The project changed during the rename check. Review the current result and try again.")
             for old, new in pairs:
                 addr = addresses[old]
                 if db.execute("UPDATE symbols SET name=? WHERE project_id=? AND name=?", (new, proj["id"], old)).rowcount == 0:
@@ -297,6 +311,8 @@ class EditMixin:
             for r in db.execute("SELECT id, best_source FROM functions WHERE project_id=? AND status='open' "
                                 "AND best_source IS NOT NULL", (proj["id"],)).fetchall():
                 db.execute("UPDATE functions SET best_source=? WHERE id=?", (swap(r["best_source"]), r["id"]))
+            if record is not None:
+                record(db)
             self._event(db, proj["id"], agent.id, "rename", msg if len(pairs) > 1 else f"{pairs[0][0]} → {pairs[0][1]}")
         self._syms.pop(proj["id"], None)
         if len(pairs) == 1:

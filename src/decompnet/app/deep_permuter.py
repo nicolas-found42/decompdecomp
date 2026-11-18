@@ -64,18 +64,23 @@ class TrialStopped(Exception):
     pass
 
 
-def validate(net, slug: str, name: str, minutes: int, max_variants: int):
+def validate_budget(minutes: int, max_variants: int) -> None:
     if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 120:
         raise NetworkError("Choose a time limit from 1 to 120 minutes.")
     if isinstance(max_variants, bool) or not isinstance(max_variants, int) or not 1 <= max_variants <= 1_000_000:
         raise NetworkError("Choose a variant limit from 1 to 1,000,000.")
+
+
+def validate(net, slug: str, name: str, minutes: int, max_variants: int, *, handoff=None):
+    validate_budget(minutes, max_variants)
     proj = net.project_row(slug)
     fn = net._function(name, slug)
     if slug in net.links:
         raise NetworkError("Run deep permuter on the room host's project.")
     if fn["status"] != "open" or not fn["best_source"] or fn["best_score"] is None:
         raise NetworkError("Choose an unmatched function with saved, scored C first.")
-    if net.store.one("SELECT 1 FROM claims WHERE function_id=? AND expires_at>?", fn["id"], time.time()):
+    claim = net.store.one("SELECT agent_id FROM claims WHERE function_id=? AND expires_at>?", fn["id"], time.time())
+    if claim and (handoff is None or handoff.id != claim["agent_id"]):
         raise NetworkError("This function is working; wait for its claim to finish.")
     return proj, fn
 
@@ -114,6 +119,20 @@ class Search(Permuter):
             return False
         self.held = True
         return True
+
+    def take_handoff(self, helper, agent, fn):
+        """Transfer the helper's claim at the moment the search starts."""
+        if helper is not None:
+            now = time.time()
+            with self.net.store.tx() as db:
+                changed = db.execute("UPDATE claims SET agent_id=?, claimed_at=?, expires_at=? "
+                                     "WHERE function_id=? AND agent_id=? AND expires_at>?",
+                                     (agent.id, now, now + max(0, self.deadline - time.monotonic()) + 120,
+                                      fn["id"], helper.id, now)).rowcount
+            if changed:
+                self.held = True
+                return True
+        return self._hold(agent, fn)
 
     def _let_go(self, agent, fn):
         self.held = False
@@ -346,13 +365,13 @@ class Search(Permuter):
             self.log(f"Tested {self.tested} candidates; best score {min(best, score) if score is not None else best}.")
 
 
-def run(net, slug: str, name: str, minutes: int, max_variants: int, log):
+def run(net, slug: str, name: str, minutes: int, max_variants: int, log, *, handoff=None):
     """Use the same limited, lower-priority worker pool as automatic permutation."""
-    return workers.pool().submit(_run, net, slug, name, minutes, max_variants, log).result()
+    return workers.pool().submit(_run, net, slug, name, minutes, max_variants, log, handoff=handoff).result()
 
 
-def _run(net, slug: str, name: str, minutes: int, max_variants: int, log):
-    proj, fn = validate(net, slug, name, minutes, max_variants)
+def _run(net, slug: str, name: str, minutes: int, max_variants: int, log, *, handoff=None):
+    proj, fn = validate(net, slug, name, minutes, max_variants, handoff=handoff)
     fork = net.fork_slug(slug)
     search = Search(net, minutes, max_variants, log, fork=fork)
     search.report()
@@ -363,7 +382,7 @@ def _run(net, slug: str, name: str, minutes: int, max_variants: int, log):
     if search.trial_workers > 1:
         log(f"Judging batches with up to {search.trial_workers} compiler workers.")
     try:
-        if not search._hold(agent, fn):
+        if not search.take_handoff(handoff, agent, fn):
             raise NetworkError("This function was claimed meanwhile. Try again after it is released.")
         try:
             log("Checking the saved C against the current compiler, header and target.")

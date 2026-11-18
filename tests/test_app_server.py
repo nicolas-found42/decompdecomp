@@ -25,9 +25,7 @@ needs_demo = pytest.mark.skipif(toolchains.installed("gcc-2.7.2-kmc") is None or
 PORT, SECRET = 6499, "s3cret-for-tests"
 
 
-@pytest.fixture(scope="module")
-def app(tmp_path_factory):
-    home = tmp_path_factory.mktemp("home")
+def _make_app(home):
     (home / ".decomp").mkdir()
     net = RomNetwork(home / ".decomp" / "decomp.db", home)
     mcp, manager, security, _ = build(net, home / ".decomp", PORT, SECRET)
@@ -36,18 +34,28 @@ def app(tmp_path_factory):
     return client, net, manager
 
 
+@pytest.fixture(scope="module")
+def app(tmp_path_factory):
+    return _make_app(tmp_path_factory.mktemp("home"))
+
+
+@pytest.fixture
+def jobs_app(tmp_path):
+    return _make_app(tmp_path)
+
+
 WINDOW = {"User-Agent": f"Mozilla/5.0 AppleWebKit/605.1.15 {window.TOKEN_AGENT}{SECRET}"}
 
 
-def test_project_agents_cannot_start_deep_permuter(tmp_path):
+def test_mcp_discovery_offers_deep_permuter_but_requires_owner_enablement(tmp_path):
     from decompnet.app import tools
+
+    from .test_loading import tiny_game
 
     internal = tmp_path / ".decomp"
     internal.mkdir()
     net = RomNetwork(internal / "decomp.db", tmp_path)
-    with net.store.tx() as db:
-        db.execute("INSERT INTO projects(slug,name,root,config,arch) VALUES(?,?,?,?,?)",
-                   ("test-game", "Test game", str(tmp_path), '{"kind":"rom","platform":"ps2"}', "mips"))
+    tiny_game(net, "test-game")
     mcp, _, security, _ = build(net, internal, PORT, SECRET)
     app = mcp.streamable_http_app(transport_security=security, host="127.0.0.1")
     url = f"http://127.0.0.1:{PORT}"
@@ -55,10 +63,10 @@ def test_project_agents_cannot_start_deep_permuter(tmp_path):
     connection = desktop.post("/api/manual-mcp", json={"action": "create", "slug": "test-game"}).json()
     agent = net.authenticate(connection["token"])
     definitions = desktop.get("/api/manual-mcp", params={"slug": "test-game"}).json()["tools"]
-    assert "deep_permuter" not in {tool["name"] for tool in definitions}
-    assert "deep_permuter" not in {tool["function"]["name"] for tool in api.api_tool_schemas()}
-    args = {"function": "f", "minutes": 1, "variants": 1}
-    assert tools.call(net, agent, "test-game", "deep_permuter", args) == "error: unknown tool 'deep_permuter'"
+    assert "deep_permuter" in {tool["name"] for tool in definitions}
+    assert "deep_permuter" in {tool["function"]["name"] for tool in api.api_tool_schemas()}
+    args = {"function": "func_0", "minutes": 1, "variants": 1}
+    assert "enable background jobs" in tools.call(net, agent, "test-game", "deep_permuter", args)
 
     agent_client = TestClient(app, base_url=url, headers={
         "Authorization": f"Bearer {connection['token']}", "X-Decomp": "1",
@@ -68,13 +76,15 @@ def test_project_agents_cannot_start_deep_permuter(tmp_path):
     assert denied.status_code == 401
 
 
-def test_deep_permuter_job_can_be_found_and_stopped_from_the_function(app, monkeypatch):
+def test_deep_permuter_job_can_be_found_and_stopped_from_the_function(jobs_app, monkeypatch):
     from decompnet.app import deep_permuter
 
-    client, _, _ = app
+    from .test_loading import tiny_game
+
+    client, net, _ = jobs_app
+    tiny_game(net, "deep-job")
     started = threading.Event()
     release = threading.Event()
-    monkeypatch.setattr(deep_permuter, "validate", lambda *args: None)
 
     def run(net, slug, name, minutes, variants, log):
         log.progress({"tested": 2, "starting_score": 40, "best_score": 20})
@@ -84,19 +94,23 @@ def test_deep_permuter_job_can_be_found_and_stopped_from_the_function(app, monke
         return {"function": name}
 
     monkeypatch.setattr(deep_permuter, "run", run)
-    payload = {"slug": "game", "name": "f", "minutes": 1, "variants": 10}
+    payload = {"slug": "deep-job", "name": "func_0", "minutes": 1, "variants": 10}
     try:
         response = client.post("/api/deep-permuter", headers={"X-Decomp": "1"}, json=payload)
         assert response.status_code == 200, response.text
         jid = response.json()["job"]
         assert started.wait(1)
-        found = client.get("/api/deep-permuter", params={"slug": "game", "name": "f"}).json()
-        assert found["job"] == jid and found["last"]["function"] == "f"
+        found = client.get("/api/deep-permuter", params=payload).json()
+        assert found["job"] == jid and found["last"]["function"] == "func_0"
         assert found["last"]["progress"]["tested"] == 2
         again = client.post("/api/deep-permuter", headers={"X-Decomp": "1"}, json=payload)
         assert again.json()["job"] == jid
-        other = client.post("/api/deep-permuter", headers={"X-Decomp": "1"}, json={**payload, "name": "g"})
-        assert other.status_code == 400 and "Another function" in other.json()["error"]
+        other = client.post("/api/deep-permuter", headers={"X-Decomp": "1"}, json={**payload, "name": "func_1"})
+        queued = other.json()["job"]
+        assert client.get("/api/job", params={"id": queued}).json()["state"] == "queued"
+        full = client.post("/api/deep-permuter", headers={"X-Decomp": "1"}, json={**payload, "name": "func_2"})
+        assert full.status_code == 400 and "already has a queued job" in full.json()["error"]
+        assert client.post("/api/job/cancel", headers={"X-Decomp": "1"}, json={"id": queued}).json() == {"cancelled": True}
         assert client.post("/api/job/cancel", headers={"X-Decomp": "1"}, json={"id": jid}).json() == {"cancelled": True}
     finally:
         release.set()
@@ -105,18 +119,21 @@ def test_deep_permuter_job_can_be_found_and_stopped_from_the_function(app, monke
         if state != "running":
             break
         time.sleep(.01)
-    found = client.get("/api/deep-permuter", params={"slug": "game", "name": "f"}).json()
+    found = client.get("/api/deep-permuter", params=payload).json()
     assert found["job"] is None and found["last"]["state"] == "cancelled"
     assert found["last"]["progress"]["best_score"] == 20
 
 
-def test_deep_searches_are_capped_app_wide_below_the_shared_workers(app, monkeypatch):
+def test_deep_searches_are_capped_app_wide_below_the_shared_workers(jobs_app, monkeypatch):
     """#244: a fixed cap of 2 searches could take every shared worker of a small machine."""
     from decompnet.app import deep_permuter
 
-    client, _, _ = app
+    from .test_loading import tiny_game
+
+    client, net, _ = jobs_app
+    tiny_game(net, "capped-a")
+    tiny_game(net, "capped-b")
     started, release = threading.Event(), threading.Event()
-    monkeypatch.setattr(deep_permuter, "validate", lambda *args: None)
     monkeypatch.setattr(deep_permuter.workers, "WORKERS", 2)
     monkeypatch.setattr(deep_permuter, "COMPILER_SLOTS", 8)
 
@@ -126,12 +143,14 @@ def test_deep_searches_are_capped_app_wide_below_the_shared_workers(app, monkeyp
         return {"function": name}
 
     monkeypatch.setattr(deep_permuter, "run", run)
-    payload = {"slug": "capped-a", "name": "f", "minutes": 1, "variants": 10}
+    payload = {"slug": "capped-a", "name": "func_0", "minutes": 1, "variants": 10}
     try:
         jid = client.post("/api/deep-permuter", headers={"X-Decomp": "1"}, json=payload).json()["job"]
         assert started.wait(1)
         other = client.post("/api/deep-permuter", headers={"X-Decomp": "1"}, json={**payload, "slug": "capped-b"})
-        assert other.status_code == 400 and "1 deep search is already running" in other.json()["error"]
+        queued = other.json()["job"]
+        assert client.get("/api/job", params={"id": queued}).json()["state"] == "queued"
+        client.post("/api/job/cancel", headers={"X-Decomp": "1"}, json={"id": queued})
     finally:
         release.set()
     for _ in range(100):
@@ -140,37 +159,41 @@ def test_deep_searches_are_capped_app_wide_below_the_shared_workers(app, monkeyp
         time.sleep(.01)
 
 
-def test_rom_deep_search_defaults_to_ten_workers_and_runs_alone(app, monkeypatch):
+def test_rom_deep_search_defaults_to_ten_workers_and_runs_alone(jobs_app, monkeypatch):
     from decompnet.app import deep_permuter
 
-    client, net, _ = app
+    from .test_loading import tiny_game
+
+    client, net, _ = jobs_app
     started, release = threading.Event(), threading.Event()
-    monkeypatch.setattr(deep_permuter, "validate", lambda *args: None)
-    monkeypatch.setattr(net, "fork_slug", lambda slug: slug if slug == "fork" else None)
+    for slug in ("deep-fork", "deep-rom", "deep-rom-old-client", "another-deep-rom"):
+        tiny_game(net, slug)
+    monkeypatch.setattr(net, "fork_slug", lambda slug: slug if slug == "deep-fork" else None)
     monkeypatch.setattr(deep_permuter, "COMPILER_SLOTS", 12)
 
     def post(slug, **extra):
         return client.post("/api/deep-permuter", headers={"X-Decomp": "1"},
-                           json={"slug": slug, "name": "f", **extra})
+                           json={"slug": slug, "name": "func_0", **extra})
 
     def run(net, slug, name, minutes, variants, log):
-        assert deep_permuter.trial_width(net.fork_slug(slug)) == (1 if slug == "fork" else 10)
+        assert deep_permuter.trial_width(net.fork_slug(slug)) == (1 if slug == "deep-fork" else 10)
         started.set()
         assert release.wait(4)
         return {"function": name}
 
     monkeypatch.setattr(deep_permuter, "run", run)
-    for slug, expected, extra in [("fork", False, {"high_performance": True}),
-                                  ("rom", True, {}), ("rom-old-client", True, {"high_performance": False})]:
+    for slug, expected, extra in [("deep-fork", False, {"high_performance": True}),
+                                  ("deep-rom", True, {}), ("deep-rom-old-client", True, {"high_performance": False})]:
         started.clear()
         release.clear()
         try:
             job = post(slug, **extra).json()["job"]
             assert started.wait(1)
-            found = client.get("/api/deep-permuter", params={"slug": slug, "name": "f"}).json()
+            found = client.get("/api/deep-permuter", params={"slug": slug, "name": "func_0"}).json()
             assert found["last"]["high_performance"] is expected
-            denied = post("another-rom")
-            assert denied.status_code == 400 and "one Deep permuter search" in denied.json()["error"]
+            queued = post("another-deep-rom").json()["job"]
+            assert client.get("/api/job", params={"id": queued}).json()["state"] == "queued"
+            client.post("/api/job/cancel", headers={"X-Decomp": "1"}, json={"id": queued})
         finally:
             release.set()
         for _ in range(100):

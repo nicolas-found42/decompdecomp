@@ -43,7 +43,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [[self-hosted, macOS, ARM64], macos-15-intel]
+        # Forks do not have access to the upstream self-hosted Apple Silicon runner.
+        runner: >-
+          ${{ fromJSON(github.event.repository.fork && '["macos-15","macos-15-intel"]'
+              || '[["self-hosted","macOS","ARM64"],"macos-15-intel"]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7

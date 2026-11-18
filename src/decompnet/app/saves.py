@@ -373,6 +373,8 @@ def _manifest_from_rows(net, proj, cfg: dict, rows, folder: Path) -> tuple[dict,
                        **{k: v for k, v in json.loads(r["meta"] or "{}").items() if k in SET_ASIDE_META}}
                       for r in rows if r["status"] == "asm"],
     }
+    if (lookup := net.console(proj).library_lookup) and (reviews := lookup.save_reviews(cfg)):
+        manifest["sdk_library_reviews"] = reviews
     return manifest, functions, units
 
 
@@ -813,6 +815,8 @@ def _apply_context(net, slug: str, folder: Path, manifest: dict, log,
                 saved_receipts.pop((r["name"], r["vram"]))
         if saved_receipts:
             verify(net, proj, log, saved=saved_receipts)
+    if lookup := net.console(proj).library_lookup:
+        lookup.restore_reviews(net, proj, manifest.get("sdk_library_reviews"))
     by_name = {r["name"]: r for r in net.store.all("SELECT name,vram FROM functions WHERE project_id=?", pid)}
     return by_name, manifest.get("functions") or {}
 

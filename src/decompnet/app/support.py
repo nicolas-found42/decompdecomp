@@ -97,18 +97,22 @@ class Jobs:
     def __init__(self, log_path: Path | None = None):
         self.jobs: dict[str, dict] = {}
         self.cancel_events: dict[str, threading.Event] = {}
-        self._lock = threading.Lock()
+        self.queued: dict[str, tuple[threading.Thread, str]] = {}
+        self._lock = threading.RLock()
         self.log_path = log_path
         self.logger = file_log(log_path) if log_path else logging.getLogger("decompdecomp")
 
-    def start(self, kind: str, fn, *, cancelled: str = "Opening the saved project was cancelled.") -> str:
+    def start(self, kind: str, fn, *, cancelled: str = "Opening the saved project was cancelled.",
+              metadata: dict | None = None, defer: bool = False, finished=None) -> str:
         jid = uuid.uuid4().hex[:JOB_ID_CHARS]
-        job = {"id": jid, "kind": kind, "state": "running", "log": [], "result": None, "error": None,
+        job = {**(metadata or {}), "id": jid, "kind": kind, "state": "queued" if defer else "running",
+               "log": [], "result": None, "error": None,
                "progress": None, "t": time.time()}
-        cancel = self.cancel_events[jid] = threading.Event()
-        self.jobs[jid] = job
+        with self._lock:
+            cancel = self.cancel_events[jid] = threading.Event()
+            self.jobs[jid] = job
         logger = self.logger
-        logger.info("job %s %s started", kind, jid)
+        logger.info("job %s %s %s", kind, jid, job["state"])
 
         def log(line: str) -> None:
             check_cancel()
@@ -154,15 +158,32 @@ class Jobs:
                 logger.error("job %s %s failed: %s\n%s", kind, jid, job["error"], traceback.format_exc())
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise
-        threading.Thread(target=run, daemon=True, name=f"job-{kind}").start()
+            finally:
+                if finished is not None:
+                    finished()
+        thread = threading.Thread(target=run, daemon=True, name=f"job-{kind}")
+        with self._lock:
+            if defer:
+                self.queued[jid] = (thread, cancelled)
+            else:
+                thread.start()
         return jid
+
+    def launch_queued(self, jid: str) -> None:
+        """Start the waiting job's clock. The scheduler holds the jobs lock."""
+        thread, _ = self.queued.pop(jid)
+        self.jobs[jid].update(state="running", t=time.time())
+        thread.start()
 
     def cancel(self, jid: str) -> bool:
         with self._lock:
             job = self.jobs.get(jid)
-            if not job or job["state"] != "running":
+            if not job or job["state"] not in ("queued", "running"):
                 return False
             self.cancel_events[jid].set()
+            if job["state"] == "queued":
+                _, message = self.queued.pop(jid)
+                job.update(error=message, state="cancelled")
             return True
 
 

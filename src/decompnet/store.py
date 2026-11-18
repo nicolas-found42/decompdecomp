@@ -1,6 +1,7 @@
-"""SQLite persistence. One file; writes through one connection and one lock, reads on a connection of each thread's
-own. The write-ahead log (WAL) lets reads run beside a write: with everything on one connection and one lock, 16
-agents on two games made every GUI request wait behind the others (the GUI's poll took 2.2-2.7 s instead of 14 ms)."""
+"""SQLite persistence with one writer and a bounded pool of readers.
+
+WAL lets reads run beside a write. Reusing readers keeps that concurrency without letting each helper or request
+thread retain its own database and WAL descriptors."""
 
 from __future__ import annotations
 
@@ -8,6 +9,9 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from queue import Empty, LifoQueue
+
+MAX_READERS = 12
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents(
@@ -356,7 +360,9 @@ class Store:
         # what the last run left in the log goes into the database now, and the log starts empty
         self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.lock = threading.RLock()
-        self._local = threading.local()  # per thread: its reading connection, and whether it's inside tx()
+        self._local = threading.local()  # whether this thread is inside tx()
+        self._reader_slots = threading.BoundedSemaphore(MAX_READERS)
+        self._readers: LifoQueue[sqlite3.Connection] = LifoQueue()
 
     def optimize(self) -> None:
         """Refresh the planner's statistics where they went stale (cheap when nothing did): the autosave, hourly."""
@@ -382,30 +388,38 @@ class Store:
                 self._local.in_tx = False
             self.conn.execute("COMMIT")
 
-    def _reader(self) -> sqlite3.Connection | None:
-        """This thread's own connection for reading, or None: inside tx() (a read there must see what the transaction
-        wrote) and for an in-memory database, reads go through the writer's connection."""
-        if self.path == IN_MEMORY or getattr(self._local, "in_tx", False):
-            return None
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = sqlite3.connect(self.path, isolation_level=None)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA query_only=1")  # a write here would bypass the writer's lock
-            self._local.conn = conn
-        return conn
+    @contextmanager
+    def _reader(self):
+        with self._reader_slots:
+            try:
+                conn = self._readers.get_nowait()
+            except Empty:
+                conn = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
+                try:
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("PRAGMA query_only=1").close()
+                except BaseException:
+                    conn.close()
+                    raise
+            try:
+                yield conn
+            finally:
+                self._readers.put_nowait(conn)
 
-    def _read(self, sql: str, args: tuple, single: bool):
-        conn = self._reader()
-        if conn is None:
-            with self.lock:
-                cur = self.conn.execute(sql, args)
-                return cur.fetchone() if single else cur.fetchall()
+    @staticmethod
+    def _fetch(conn: sqlite3.Connection, sql: str, args: tuple, single: bool):
         cur = conn.execute(sql, args)
         try:
             return cur.fetchone() if single else cur.fetchall()
         finally:
             cur.close()  # an open statement would hold its snapshot, and the log could never be checkpointed
+
+    def _read(self, sql: str, args: tuple, single: bool):
+        if self.path == IN_MEMORY or getattr(self._local, "in_tx", False):
+            with self.lock:
+                return self._fetch(self.conn, sql, args, single)
+        with self._reader() as conn:
+            return self._fetch(conn, sql, args, single)
 
     def one(self, sql: str, *args) -> sqlite3.Row | None:
         return self._read(sql, args, single=True)

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from functools import lru_cache
 from pathlib import Path
 
 from elftools.common.exceptions import ELFError
@@ -17,6 +18,7 @@ from ...network import NetworkError
 from . import analysis_tools
 
 MAX_ELF = 128 << 20
+SYMBOL_REPORTS_CACHED = 4
 
 
 def check_elf(path):
@@ -43,6 +45,51 @@ def run_command(argv, directory, env=None):
     return out.decode(errors='replace')
 
 
+def _tool_revision(path):
+    stat = path.stat()
+    return stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+@lru_cache(maxsize=SYMBOL_REPORTS_CACHED)
+def _sdk_symbols(program, program_digest, scanner, scanner_revision):
+    # A function filter is applied after this whole-ELF scan. All helpers can reuse the same report.
+    with tempfile.TemporaryDirectory(prefix='decompdecomp-ps2-sdk-') as tmp:
+        work = Path(tmp)
+        with program.open('rb') as f:
+            section = ELFFile(f).get_section_by_name('.text')
+            if section is None:
+                raise ValueError('This ELF has no .text section to scan.')
+            (work / 'code').write_bytes(section.data())
+            address = section['sh_addr']
+        text = run_command([scanner, work / 'code', hex(address)], work)
+        _check_scan_inputs((program, program_digest), tool=(scanner, scanner_revision))
+        return text
+
+
+@lru_cache(maxsize=SYMBOL_REPORTS_CACHED)
+def _transfer_symbols(program, program_digest, companion, companion_digest, catalog, script, script_revision):
+    # Capture symbol addresses, sizes and names together so edits cannot cache a report under the old catalog.
+    with tempfile.TemporaryDirectory(prefix='decompdecomp-ps2-transfer-') as tmp:
+        work = Path(tmp)
+        with (work / 'functions.csv').open('w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(('binary', 'type', 'va', 'size', 'name'))
+            for address, size, name in catalog:
+                writer.writerow((program.name, 'FUNC', hex(address), size, name))
+        report = work / 'transfer.tsv'
+        run_command([sys.executable, '-I', script, '--donor', program,
+                     '--donor-symbols', work / 'functions.csv', '--acceptor', companion, '--mask', 'strict',
+                     '--out', report], work)
+        _check_scan_inputs((program, program_digest), (companion, companion_digest), tool=(script, script_revision))
+        return report.read_text(encoding='utf-8')
+
+
+def _check_scan_inputs(*images, tool):
+    if (any(hashlib.sha1(path.read_bytes()).hexdigest() != checksum for path, checksum in images)
+            or _tool_revision(tool[0]) != tool[1]):
+        raise ValueError('A PS2 scan input changed during analysis. Run it again.')
+
+
 def run(net, proj, key, data, log):
     if key not in analysis_tools.TOOLS or net.console(proj).id != 'ps2' or not net.is_rom(proj):
         raise ValueError('Choose a PS2 ROM project and a PS2 analysis tool.')
@@ -54,12 +101,13 @@ def run(net, proj, key, data, log):
     if not program.is_relative_to(root):
         raise ValueError('The project ELF must be inside the project folder.')
     check_elf(program)
-    if rom.get('sha1') and hashlib.sha1(program.read_bytes()).hexdigest() != rom['sha1']:
+    program_digest = hashlib.sha1(program.read_bytes()).hexdigest()
+    if rom.get('sha1') and program_digest != rom['sha1']:
         raise ValueError('The project ELF differs from the imported game.')
     log('Reading ' + program.name)
-    with tempfile.TemporaryDirectory(prefix='decompdecomp-ps2-') as tmp:
-        work = Path(tmp)
-        if key == 'r5900':
+    if key == 'r5900':
+        with tempfile.TemporaryDirectory(prefix='decompdecomp-ps2-') as tmp:
+            work = Path(tmp)
             try:
                 address = int(str(data.get('address', '')), 16)
             except ValueError:
@@ -75,32 +123,22 @@ def run(net, proj, key, data, log):
             if not report.is_file():
                 raise ValueError('Ghidra could not produce a draft. ' + out[-700:])
             return {'summary': f'R5900 pseudocode for 0x{address:08X}', 'text': report.read_text(encoding='utf-8')}
-        if key == 'sce-scan':
-            with program.open('rb') as f:
-                section = ELFFile(f).get_section_by_name('.text')
-                if section is None:
-                    raise ValueError('This ELF has no .text section to scan.')
-                (work / 'code').write_bytes(section.data())
-                address = section['sh_addr']
-            log('Scanning .text against PS2 SDK signatures')
-            result = run_command([analysis_tools.location(key) / 'sce-scan', work / 'code', hex(address)], work)
-            return {'summary': f'{len(result.splitlines()) - 1} SDK symbol candidates', 'text': result}
-        companion = Path(data['companion']).expanduser() if data.get('companion') else root / 'analysis-inputs/CORE.elf'
-        check_elf(companion)
-        if companion.samefile(program) or hashlib.sha1(companion.read_bytes()).hexdigest() == rom.get('sha1'):
-            raise ValueError('Choose a different executable for the comparison.')
-        with (work / 'functions.csv').open('w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(('binary', 'type', 'va', 'size', 'name'))
-            for row in net.store.all('SELECT vram,size,name FROM functions WHERE project_id=?', proj['id']):
-                writer.writerow((program.name, 'FUNC', hex(row['vram']), row['size'], row['name']))
-        log('Comparing function shapes with ' + companion.name)
-        report = work / 'transfer.tsv'
-        run_command([sys.executable, '-I', analysis_tools.location(key) / 'transfer_symbols.py', '--donor', program,
-                     '--donor-symbols', work / 'functions.csv', '--acceptor', companion, '--mask', 'strict',
-                     '--out', report], work)
-        text = report.read_text(encoding='utf-8')
-        return {'summary': f'{len(text.splitlines()) - 1} functions with candidates in {companion.name}', 'text': text}
+    if key == 'sce-scan':
+        scanner = analysis_tools.location(key) / 'sce-scan'
+        log('Reading the PS2 SDK signature scan')
+        text = _sdk_symbols(program, program_digest, scanner, _tool_revision(scanner))
+        return {'summary': f'{len(text.splitlines()) - 1} SDK symbol candidates', 'text': text}
+    companion = Path(data['companion']).expanduser() if data.get('companion') else root / 'analysis-inputs/CORE.elf'
+    check_elf(companion)
+    companion_digest = hashlib.sha1(companion.read_bytes()).hexdigest()
+    if companion.samefile(program) or companion_digest == program_digest:
+        raise ValueError('Choose a different executable for the comparison.')
+    catalog = tuple(tuple(row) for row in net.store.all(
+        'SELECT vram,size,name FROM functions WHERE project_id=? ORDER BY vram,name', proj['id']))
+    script = analysis_tools.location(key) / 'transfer_symbols.py'
+    log('Reading function shape candidates in ' + companion.name)
+    text = _transfer_symbols(program, program_digest, companion, companion_digest, catalog, script, _tool_revision(script))
+    return {'summary': f'{len(text.splitlines()) - 1} functions with candidates in {companion.name}', 'text': text}
 
 
 # Shared by MCP and in-process API helpers. Starting many Ghidra JVMs can exhaust a Mac.

@@ -434,6 +434,12 @@ class Console:
         """Build the project and compare what it makes with the user's copy: {"identical", "detail"}."""
         raise RomError(f"{self.name} projects aren't rebuilt and compared here")
 
+    reference_tools: tuple[str, ...] = ()
+
+    def function_references(self, fp, symbol: str, tools, limit: int) -> dict[str, list[str]]:
+        """Evidence in the original program for a function's relocated operands."""
+        return {}
+
     def read_data(self, fp, name: str, length: int) -> str | None:
         """A data symbol's bytes, when the project's objects don't hold the game's data; None: they do."""
         return None

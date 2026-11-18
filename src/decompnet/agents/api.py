@@ -426,6 +426,10 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                               reason=st("what follows and how you can tell", True))),
         "read_data": ("Hex dump of the original's data at an address or symbol.", s(what=st("address or symbol", True),
                                                                                     length=it("bytes, up to 512"))),
+        "pe_imports": ("Original DLL imports by function, including direct IAT references and linker thunks.",
+                       s(function=st("function", True), offset=it("skip this many reference sites"))),
+        "pe_data_refs": ("Original data operands with section, address and quoted string or hex previews.",
+                         s(function=st("function", True), offset=it("skip this many reference sites"))),
         "get_class": ("C++ class layout found in the game's code: fields by offset and virtual functions by slot. "
                       "Give a vtable address or one of its functions; empty lists the classes.",
                       s(what=st("vtable address, or a virtual function / constructor"))),
@@ -462,6 +466,12 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
         "try_compiler": ("Compile a function's C with another compiler and flags, recording nothing: test before suggesting.",
                          s(function=st("function", True), compiler=st("toolchain id", True), flags=st("flags"),
                            source=st("the C (default: the best attempt)"))),
+        "compare_compilers": ("Rank the assigned settings and up to two alternative compiler IDs on the same saved C "
+                              "in a ROM project. Use try_compiler for the full diff of a promising profile.",
+                              s(function=st("function", True),
+                                compilers={"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 2,
+                                           "description": "alternative IDs from project_info", "req": True},
+                                flags=st("flags for the alternatives, or empty for defaults"), source=st("optional C"))),
         "search_notes": ("Search notes.", s(query=st("text", True))),
         "find_similar": ("Functions that look like this one, matched ones first, with the best one's source.",
                          s(function=st("function", True), limit=it("how many"))),

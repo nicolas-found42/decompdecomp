@@ -42,6 +42,7 @@ packs: build.py 10.0SP1). Older projects' configs say "win32" (decomp.dev's id):
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 from ...network import NetworkError
@@ -413,6 +414,20 @@ class WindowsPC(Console):
         from . import scratch
 
         return scratch.set_own_compiler(fp.root, fp.manifest or {}, compiler, sources)
+
+    reference_tools = ("pe_imports", "pe_data_refs")
+
+    def function_references(self, fp, symbol: str, tools, limit: int) -> dict[str, list[str]]:
+        from . import references, scratch
+
+        entry = _entries(fp).get(symbol)
+        if entry is None:
+            return {}
+        try:
+            pe = scratch._program_at(fp.root, fp.manifest, entry["addr"])
+        except (OSError, ValueError, KeyError, NetworkError, struct.error):
+            return {}
+        return references.references(pe, entry, tools, limit) if pe else {}
 
     def read_data(self, fp, name: str, length: int) -> str | None:
         """The program's data isn't in the target objects: it's read from the user's copy."""

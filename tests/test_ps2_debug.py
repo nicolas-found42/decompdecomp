@@ -416,6 +416,8 @@ def test_ps2_analysis_uses_verified_program_and_reports_candidates(tmp_path, mon
     net = SimpleNamespace(console=lambda p: SimpleNamespace(id='ps2'), is_rom=lambda p: True, cfg=lambda p: {'rom': rom})
     proj = {'root': str(tmp_path), 'id': 1}
     monkeypatch.setattr(analysis_tools, 'ready', lambda key: True)
+    (tmp_path / 'sce-scan').touch()
+    monkeypatch.setattr(analysis_tools, 'location', lambda key: tmp_path)
 
     def scan(args, directory):
         assert args[-1] == '0x1000000' and args[-2].read_bytes() == code

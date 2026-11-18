@@ -2648,6 +2648,7 @@ class ForkEngine:
                           self._method_draft(fp, cfg, fn, seed).strip(), "```"]
         lines += self._class_brief(fp, cfg, fn) + self._struct_brief(fp, cfg, fn)
         lines += self._debug_brief(fp, cfg, fn)
+        lines += self._reference_brief(fp, proj, cfg, fn, agent)
         lines += self._ltcg_brief(fp, meta, fn, unit)
         lines += self._method_brief(fp, cfg, meta, fn)
         if found := self._unresolved_lines(fp, meta, fn, unit, src_text[span[0]:span[1]] if span else None):
@@ -2837,6 +2838,40 @@ class ForkEngine:
         """get_function's lines on the class of a virtual function, constructor or destructor (classes.brief_lines)."""
         found, addr = self._class_of(fp, cfg, fn)
         return classes.brief_lines(found, addr, self._class_label(found)) if addr is not None else []
+
+    def function_references(self, slug: str, function: str, tool: str, offset: int = 0) -> str:
+        _, fp, cfg = self.get(slug)
+        fn = self._fn(slug, function)
+        console = consoles.get(cfg.get("platform"))
+        symbol = self._meta(fn).get("symbol") or fn["name"]
+        offset = max(0, int(offset))
+        page = 24
+        refs = console.function_references(fp, symbol, [tool], offset + page + 1)
+        if tool not in refs:
+            raise NetworkError("The original program or its function index is unavailable for this function.")
+        rows = refs[tool]
+        if not rows:
+            return "No statically resolved references of this kind in the indexed operands."
+        lines = rows[offset:offset + page]
+        if len(rows) > offset + page:
+            lines.append(f"More references: call {tool} with offset={offset + page}.")
+        return "\n".join(lines) or "No more references."
+
+    def _reference_brief(self, fp, proj, cfg, fn, agent) -> list[str]:
+        from .tool_policy import visible
+
+        console = consoles.get(cfg.get("platform"))
+        if not console.reference_tools or cfg.get("origin") != "scratch":
+            return []
+        tools = visible(self.net, proj["slug"], console.reference_tools, agent)
+        if not tools:
+            return []
+        refs = console.function_references(fp, self._meta(fn).get("symbol") or fn["name"], tools, 3)
+        lines = []
+        for tool, rows in refs.items():
+            if rows:
+                lines += [f"{tool}({fn['name']}), original program evidence:", *rows]
+        return ["", *lines] if lines else []
 
     def _debug_brief(self, fp: ForkProject, cfg: dict, fn) -> list[str]:
         """What the game's own debug information says about the function (Console.debug_of), when it has any."""

@@ -42,13 +42,14 @@ class PlayStation2(Console):
                  guess="EEGCC-2.9"),
         Compiler("ee-gcc-2.9-991111-01", "EE-GCC 2.9 (991111-01)", "SDK timer code with divide padding"),
         Compiler("ee-gcc-2.9-as296", "EE-GCC 2.9 / 2.96 assembler", "SDK code using later delay-slot scheduling"),
-        Compiler("ee-gcc-3.2-040921", "EE-GCC 3.2 (040921 SDK driver)", "late SDK compiler with its own driver flags"),
         Compiler("ee-gcc-2.96-as2004", "EE-GCC 2.96 / 2004 assembler", "SDK unaligned load/store expansion"),
         Compiler("ee-gcc-2.95.2", "EE-GCC 2.95.2 (SN)", "PlayStation 2 games built with SN Systems' ProDG",
                  guess="EEGCC-2.95.2"),
         Compiler("ee-gcc-2.95.3", "EE-GCC 2.95.3 (SN)", "later PlayStation 2 games built with SN Systems' ProDG",
                  guess="EEGCC-2.95.3"),
         Compiler("ee-gcc-3.2", "EE-GCC 3.2", "late PlayStation 2 games (2003-2005)", guess="EEGCC-3.2"),
+        # Both profiles use the same SDK archive. Prefer the standard driver when the import's sample is tied.
+        Compiler("ee-gcc-3.2-040921", "EE-GCC 3.2 (040921 SDK driver)", "late SDK compiler with its own driver flags"),
         Compiler("mwcps2-2.3.3", "CodeWarrior PS2 2.3.3", "PlayStation 2 games built with CodeWarrior (2000-2001, "
                  "proprietary)", guess="MWCPS2-2"),
         Compiler("mwcps2-3.0.1", "CodeWarrior PS2 3.0.1", "PlayStation 2 games built with CodeWarrior (2002-2005, "

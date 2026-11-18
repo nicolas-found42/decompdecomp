@@ -6,6 +6,9 @@ from decompnet.agents.cursor import CURSOR
 
 
 def test_cursor_private_home_and_permissions_do_not_import_user_mcp(tmp_path, monkeypatch):
+    from decompnet.agents import cursor
+
+    monkeypatch.setattr(cursor.sys, 'platform', 'linux')  # this test covers the file-backed login
     original = tmp_path / 'user'
     config = original / '.cursor'
     config.mkdir(parents=True)
@@ -75,7 +78,15 @@ def test_mac_login_token_is_only_in_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(cursor.sys, 'platform', 'darwin')
     monkeypatch.delenv('CURSOR_AUTH_TOKEN', raising=False)
     monkeypatch.delenv('CURSOR_API_KEY', raising=False)
-    monkeypatch.setattr(cursor.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0, stdout='login-secret\n'))
+    monkeypatch.setenv('HOME', str(tmp_path / 'app-home'))
+    monkeypatch.setattr(cursor, '_mac_login_home', lambda: str(tmp_path / 'account-home'))
+
+    def read_keychain(command, *, env, **kwargs):
+        assert command[:2] == ['/usr/bin/security', 'find-generic-password']
+        assert env['HOME'] == str(tmp_path / 'account-home')
+        return SimpleNamespace(returncode=0, stdout='login-secret\n')
+
+    monkeypatch.setattr(cursor.subprocess, 'run', read_keychain)
     cmd, env = CURSOR.session_command('cursor-agent', tmp_path, 'http://127.0.0.1:1/mcp', 'mcp-secret', 'auto')
     assert env['CURSOR_AUTH_TOKEN'] == 'login-secret' and env['AGENT_CLI_CREDENTIAL_STORE'] == 'memory'
     assert 'login-secret' not in ' '.join(cmd)

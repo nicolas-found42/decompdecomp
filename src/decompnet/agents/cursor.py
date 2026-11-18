@@ -24,6 +24,12 @@ def config_home() -> Path:
                  else Path.home() / '.cursor'))
 
 
+def _mac_login_home() -> str:
+    import pwd  # POSIX only, used by the macOS Keychain lookup
+
+    return pwd.getpwuid(os.getuid()).pw_dir
+
+
 class Cursor(Agent):
     id = 'cursor'
     aliases = ('cursor-cli',)
@@ -98,10 +104,11 @@ class Cursor(Agent):
             # only its access token through its supported environment variable.
             try:
                 result = subprocess.run(['/usr/bin/security', 'find-generic-password', '-s', 'cursor-access-token',
-                                         '-a', 'cursor-user', '-w'], capture_output=True, text=True, timeout=5)
+                                         '-a', 'cursor-user', '-w'], capture_output=True, text=True, timeout=5,
+                                        env=os.environ | {'HOME': _mac_login_home()})
                 if result.returncode == 0 and result.stdout.strip():
                     env['CURSOR_AUTH_TOKEN'] = result.stdout.strip()
-            except (OSError, subprocess.TimeoutExpired):
+            except (KeyError, OSError, subprocess.TimeoutExpired):
                 pass
         if env.get('CURSOR_AUTH_TOKEN') or os.environ.get('CURSOR_AUTH_TOKEN') or os.environ.get('CURSOR_API_KEY'):
             env['AGENT_CLI_CREDENTIAL_STORE'] = 'memory'

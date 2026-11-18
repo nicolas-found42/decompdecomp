@@ -1,5 +1,11 @@
 # Matching PlayStation 2 code
 
+Use `ps2_decompile(function)` for Ghidra's R5900 pseudocode. `ps2_sdk_symbols(function)` checks SDK signatures.
+`ps2_symbol_transfer(function)` finds counterparts in the project's companion ELF (GT4 uses CORE.elf).
+A signature or transfer hit is a lead. Verify the function boundary and use the byte judge for a match.
+`project_info` lists compiler IDs. Use `try_compiler(function, compiler, flags, source)` to compare profiles,
+then submit the candidate through `compile_and_diff` under the project's selected profile.
+
 CPU: the Emotion Engine (R5900), MIPS III-like with 128-bit registers.
 - `lq`/`sq` move 128 bits; MMI instructions (`pcpyld`, `paddw`, `pextlw`...) come from inlined
   memcpy/memset or vector code.

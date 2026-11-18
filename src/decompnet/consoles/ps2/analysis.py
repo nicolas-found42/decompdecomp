@@ -5,12 +5,15 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
+from elftools.common.exceptions import ELFError
 from elftools.elf.elffile import ELFFile
 
 from ...forks import ghidra
 from ...limits import capped, stop_group
+from ...network import NetworkError
 from . import analysis_tools
 
 MAX_ELF = 128 << 20
@@ -98,3 +101,48 @@ def run(net, proj, key, data, log):
                      '--out', report], work)
         text = report.read_text(encoding='utf-8')
         return {'summary': f'{len(text.splitlines()) - 1} functions with candidates in {companion.name}', 'text': text}
+
+
+# Shared by MCP and in-process API helpers. Starting many Ghidra JVMs can exhaust a Mac.
+_agent_slots = threading.BoundedSemaphore(2)
+
+
+def for_agent(net, slug, key, function="", offset=0, companion="CORE.elf"):
+    """Show a project's decompiler or symbol evidence in pages small enough for a helper's context."""
+    if type(offset) is not int or offset < 0:
+        raise NetworkError("Use a nonnegative character offset.")
+    proj = net.project_row(slug)
+    address = net._function(function, slug)["vram"] if function else None
+    data = {"address": hex(address)} if address is not None else {}
+    if key == "r5900" and address is None:
+        raise NetworkError("Specify a project function name or its start address.")
+    if key == "transfer":
+        # Only the owner's desktop picker may open files outside the project.
+        root = Path(proj["root"]).resolve()
+        folder = root / "analysis-inputs"
+        if (not isinstance(companion, str) or not companion or Path(companion).name != companion
+                or not companion.lower().endswith(".elf") or "\\" in companion):
+            raise NetworkError("Choose an ELF filename in this project's analysis-inputs folder.")
+        path = (folder / companion).resolve()
+        if not path.is_relative_to(folder) or not path.is_file():
+            raise NetworkError("The companion ELF must exist inside this project's analysis-inputs folder.")
+        data["companion"] = str(path)
+    if not _agent_slots.acquire(blocking=False):
+        raise NetworkError("Two PS2 analyses are running. Retry this analysis after they finish.")
+    try:
+        result = run(net, proj, key, data, lambda line: None)
+    except (OSError, ValueError, ELFError) as exc:
+        raise NetworkError(str(exc)) from exc
+    finally:
+        _agent_slots.release()
+    text = result["text"]
+    if address is not None and key != "r5900":
+        lines = text.splitlines()
+        column = 0 if key == "sce-scan" else 1
+        hits = [line for line in lines[1:] if int(line.split("\t")[column], 16) == address]
+        if not hits:
+            return f"No candidate starts at 0x{address:08X}."
+        text = "\n".join([lines[0], *hits])
+    end = offset + 5000
+    more = f"\nContinue with offset={end}." if end < len(text) else ""
+    return f"{result['summary']}\n{text[offset:end]}{more}"

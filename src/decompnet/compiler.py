@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -151,6 +152,21 @@ def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd:
     if _sandbox_mode(cfg) == "wsl":
         check = _CANCEL_CHECK.get()
         return wsl.run(argv, cwd or work, timeout, **stage, **({"check_cancel": check} if check else {}))
+    # ProDG builds the preprocessor command from its driver's real path without quoting it.
+    # wibo resolves symlinks to the driver, so stage the executable itself and point at its installed libraries.
+    if (sys.platform == "darwin" and len(argv) > 3 and Path(argv[0]).name == "wibo"
+            and argv[1].endswith("/bin/ee-gcc.exe") and " " in argv[1] and "-B" in argv[:-1]):
+        driver = Path(argv[1])
+        with tempfile.TemporaryDirectory(prefix="decomp-prodg-", dir="/tmp") as tmp:
+            alias = Path(tmp)
+            (alias / "bin").mkdir()
+            shutil.copy2(driver, alias / "bin" / driver.name)
+            (alias / "lib").symlink_to(driver.parents[1] / "lib", target_is_directory=True)
+            argv = argv.copy()
+            argv[1] = str(alias / "bin" / driver.name)
+            prefix = argv.index("-B") + 1
+            argv[prefix] = argv[prefix].replace(str(driver.parents[1]) + "/", str(alias) + "/", 1)
+            return _exec(cfg, work, argv, timeout, cwd, **stage)
     # in the work folder, never in the app's own: KMC GCC's assembler (binutils 2.6) can't read its input when the
     # current directory is / ("Bad file descriptor"), as it can be for a program its launcher starts
     check = _CANCEL_CHECK.get()

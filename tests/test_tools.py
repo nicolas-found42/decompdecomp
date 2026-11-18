@@ -22,8 +22,9 @@ CASES = [
     ("pc", True, {"join_functions", "report_boundary", "get_class", "guess_struct", "compiler_map", "redraft",
                   "search_flags"}, set()),
     ("n64", False, {"report_boundary", "get_class", "guess_struct", "compiler_map", "redraft", "search_flags"},
-     {"join_functions", "read_file", "split_file"}),
-    ("ps2", False, {"report_boundary", "get_class", "guess_struct", "compiler_map", "redraft", "search_flags"},
+     {"join_functions", "read_file", "split_file"} | tools.PS2_ANALYSIS),
+    ("ps2", True, {"try_compiler"}, tools.PS2_ANALYSIS),
+    ("ps2", False, tools.PS2_ANALYSIS | {"report_boundary", "get_class", "guess_struct", "compiler_map", "redraft", "search_flags"},
      {"join_functions", "read_file", "split_file"}),
 ]
 
@@ -91,3 +92,50 @@ def test_a_rom_project_without_engine_joins_names_the_engine(tmp_path, monkeypat
                       {"function": "a", "with_function": "b", "reason": "a has no epilogue"})
     assert text.startswith("error: join_functions isn't offered in Nintendo 64 projects")
     assert "the ROM engine can't join functions" in text and "Traceback" not in text
+
+
+def test_ps2_api_helper_can_page_analysis_and_only_read_project_companions(tmp_path, monkeypatch):
+    from decompnet.consoles.ps2 import analysis
+
+    root = tmp_path / "game"
+    inputs = root / "analysis-inputs"
+    inputs.mkdir(parents=True)
+    (inputs / "CORE.elf").touch()
+    outside = tmp_path / "other.elf"
+    outside.touch()
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,arch,big_endian,root,config) VALUES(?,?,?,?,?,?)",
+                         ("game", "Game", "mips", 0, str(root), json.dumps({"kind": "rom", "platform": "ps2"}))).lastrowid
+        db.execute("INSERT INTO functions(project_id,name,vram,size,rom_offset,target,relocs,status) "
+                   "VALUES(?,?,?,?,?,?,?,?)", (pid, "timer", 0x1000, 8, 0, bytes(8), "[]", "open"))
+    monkeypatch.setattr(net.progress, "sync", lambda *args, **kwargs: None)
+    agent, _ = net.local_agent("api-probe")
+
+    def run(net, proj, key, data, log):
+        if key == "r5900":
+            assert data["address"] == "0x1000"
+            return {"summary": "Ghidra", "text": "x" * 5000 + "end"}
+        if key == "transfer":
+            assert data["companion"] == str(inputs / "CORE.elf")
+            text = "name\tdonor_va\tacceptor_vas\ntimer\t0x1000\t0x800\nother\t0x1008\t0x808"
+        else:
+            text = "address\tname\n1000\tsdkTimer\n1008\tother"
+        return {"summary": "candidates", "text": text}
+
+    monkeypatch.setattr(analysis, "run", run)
+
+    def invoke(name, **args):
+        return tools.call(net, agent, "game", name, args)
+
+    assert invoke("ps2_decompile", function="timer").endswith("Continue with offset=5000.")
+    assert invoke("ps2_decompile", function="timer", offset=5000) == "Ghidra\nend"
+    assert invoke("ps2_sdk_symbols", function="timer").endswith("1000\tsdkTimer")
+    assert invoke("ps2_symbol_transfer", function="timer").endswith("timer\t0x1000\t0x800")
+    for filename in ("../other.elf", str(outside)):
+        assert invoke("ps2_symbol_transfer", companion=filename).startswith("error:")
+    try:
+        (inputs / "link.elf").symlink_to(outside)
+    except OSError:
+        pytest.skip("creating a symlink is unavailable on this host")
+    assert invoke("ps2_symbol_transfer", companion="link.elf").startswith("error:")

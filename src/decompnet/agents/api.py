@@ -389,6 +389,13 @@ def api_tool_schemas(fork: bool = False, names: list[str] | None = None) -> list
                            "notes and a draft. count > 1: a batch of small functions to judge together.",
                            s(function=st("optional name or address"), strategy=st("finish | easiest | closest | hardest | random"),
                              count=it("up to 6 small functions at once"))),
+        "ps2_decompile": ("Read Ghidra Emotion Engine pseudocode for a PS2 function.",
+                          s(function=st("function name or address", True), offset=it("character offset to resume"))),
+        "ps2_sdk_symbols": ("Find SDK signature candidates for one PS2 function or browse all.",
+                            s(function=st("optional function name or address"), offset=it("character offset to resume"))),
+        "ps2_symbol_transfer": ("Compare PS2 functions with a companion ELF. Results are symbol candidates.",
+                                s(function=st("optional function name or address"), offset=it("character offset to resume"),
+                                  companion=st("filename in analysis-inputs, default CORE.elf"))),
         "get_function": ("Show any function by name or address.", s(function=st("name or address", True))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",

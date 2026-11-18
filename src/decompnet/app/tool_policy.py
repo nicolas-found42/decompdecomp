@@ -16,6 +16,7 @@ MATCHING = REQUIRED | {'get_candidate','compile_patch','compile_variants','get_a
     'read_file','search_code','edit_file','file_status','standins_for'}
 PRESETS = {'full': ('All tools', None), 'matching': ('Matching essentials', MATCHING),
            'investigation': ('Compiler and data investigation', MATCHING | {'read_data','get_class','guess_struct',
+               'ps2_decompile','ps2_sdk_symbols','ps2_symbol_transfer',
                'compiler_map','try_compiler','search_flags','compiler_experiments','get_compiler_trial','suggest','report_boundary'}),
            'polishing': ('Polishing and names', REQUIRED | {'claim_readable','make_readable','tidy_done','rename_symbol',
                'guide','get_context','edit_context','read_file','edit_file','file_status','search_code','add_note','find_similar'})}

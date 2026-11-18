@@ -14,7 +14,7 @@ local Linux runner, SN Systems EE-GCC and CodeWarrior through wibo. Physical Int
 Mac and retail-game verification remain planned; Apple Silicon checks use the
 homemade PS2 demo. Arbitrary imported Make/Ninja builds in the VM remain planned.
 
-The PS2 desktop tool page can decompile an R5900 function, scan SDK signatures, and compare function shapes across two executables. All three were exercised on the Apple Silicon GT4 boot project.
+The PS2 desktop tool page and project agents can decompile an R5900 function, scan SDK signatures, and compare function shapes across two executables. All three were exercised on the Apple Silicon GT4 boot project.
 
 ## What works where
 
@@ -24,6 +24,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 
 | Feature | N64 | PS1 | PS2 | PS3 | PS4 | PSP | GBA | GameCube · Wii | Windows PC | Xbox | DS | Public decomps |
 | :-- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| R5900 decompiler, SDK signatures and cross-ELF symbol candidates in the desktop and agent tools | — | — | ✓ | — | — | — | — | — | — | — | — | — |
 | Verify assembly against pinned PS2SDK sources | — | — | ✓ | — | — | — | — | — | — | — | — | — |
 | Status | recommended | beta | beta | beta | beta | beta | beta | beta | beta | beta | beta | the project's own |
 | Start from your own copy | ✓ | ✓ | ✓ | ✓ decrypted EBOOT.ELF | ✓ decrypted ELF | ✓ unencrypted or decrypted program and modules (ISO, CSO, CHD) | ✓ ROM | ✓ | ✓ | ✓ default.xbe, .xiso or Redump .iso | ✓ | fork by address |

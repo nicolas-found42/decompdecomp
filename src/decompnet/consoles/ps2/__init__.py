@@ -61,7 +61,7 @@ class PlayStation2(Console):
     ram = (0x00080000, 0x02000000)  # where the EE's programs live: above the kernel, within its 32 MiB
     demo = "demo-ps2"
     demo_tools = ("ee-gcc-2.96", "binutils-mips")
-    own_features = frozenset({EXPORT})
+    own_features = frozenset({EXPORT, "ps2_analysis"})
     as_flags = ("-EL", "-march=r5900", "-mabi=eabi")
 
     def sniff(self, head: bytes, file) -> bool:

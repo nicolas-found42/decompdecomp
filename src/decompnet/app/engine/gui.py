@@ -96,6 +96,7 @@ class GuiMixin:
         return {
             "slug": proj["slug"], "title": proj["name"], "description": proj["description"],
             **console.project_facts(),
+            "can_manage_sdk_libraries": bool(console.library_lookup and slug not in self.links),
             "can_verify_assembly": bool(console.verify_assembly and slug not in self.links and slug not in self.rooms),
             "verified_assembly": receipts["n"], "verified_assembly_bytes": receipts["bytes"] or 0,
             "compilers": [c.id for c in console.compilers],

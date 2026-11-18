@@ -15,7 +15,7 @@ from elftools.elf.elffile import ELFFile
 from ...forks import ghidra
 from ...limits import capped, stop_group
 from ...network import NetworkError
-from . import analysis_tools
+from . import analysis_tools, library_lookup
 
 MAX_ELF = 128 << 20
 SYMBOL_REPORTS_CACHED = 4
@@ -150,7 +150,8 @@ def for_agent(net, slug, key, function="", offset=0, companion="CORE.elf"):
     if type(offset) is not int or offset < 0:
         raise NetworkError("Use a nonnegative character offset.")
     proj = net.project_row(slug)
-    address = net._function(function, slug)["vram"] if function else None
+    row = net._function(function, slug) if function else None
+    address = row["vram"] if row is not None else None
     data = {"address": hex(address)} if address is not None else {}
     if key == "r5900" and address is None:
         raise NetworkError("Specify a project function name or its start address.")
@@ -168,19 +169,34 @@ def for_agent(net, slug, key, function="", offset=0, companion="CORE.elf"):
     if not _agent_slots.acquire(blocking=False):
         raise NetworkError("Two PS2 analyses are running. Retry this analysis after they finish.")
     try:
-        result = run(net, proj, key, data, lambda line: None)
+        local = ""
+        if key == "sce-scan" and net.cfg(proj).get(library_lookup.SETTINGS_KEY):
+            report = library_lookup.scan(net, proj, log=lambda line: None)
+            local = library_lookup.render(report, row["id"] if row is not None else None, library_lookup.reviews(net, proj))
+        result = None
+        if not local or analysis_tools.ready(key):
+            try:
+                result = run(net, proj, key, data, lambda line: None)
+            except (OSError, ValueError, ELFError):
+                if not local:
+                    raise
+                local += "\nThe boot ELF signature scanner is unavailable for this project."
     except (OSError, ValueError, ELFError) as exc:
         raise NetworkError(str(exc)) from exc
     finally:
         _agent_slots.release()
-    text = result["text"]
-    if address is not None and key != "r5900":
+    text = result["text"] if result is not None else ""
+    if text and address is not None and key != "r5900":
         lines = text.splitlines()
         column = 0 if key == "sce-scan" else 1
         hits = [line for line in lines[1:] if int(line.split("\t")[column], 16) == address]
-        if not hits:
-            return f"No candidate starts at 0x{address:08X}."
-        text = "\n".join([lines[0], *hits])
+        text = "\n".join([lines[0], *hits]) if hits else f"No candidate starts at 0x{address:08X}."
+    if local:
+        text = local + (f"\n\nExisting SDK signature scanner\n{text}" if result is not None else "")
     end = offset + 5000
     more = f"\nContinue with offset={end}." if end < len(text) else ""
+    if local:
+        return text[offset:end] + more
+    if text.startswith("No candidate starts at"):
+        return text
     return f"{result['summary']}\n{text[offset:end]}{more}"

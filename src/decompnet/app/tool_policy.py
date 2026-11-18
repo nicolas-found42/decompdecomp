@@ -11,12 +11,12 @@ KEY = 'agent-disabled-tools'
 
 
 MATCHING = REQUIRED | {'get_candidate','compile_patch','compile_variants','get_assembly','last_diff',
-    'try_local_repairs','compile_family','family_targets','get_context','edit_context','redraft',
+    'try_local_repairs','compile_family','family_targets','get_context','edit_context','redraft','deep_permuter','background_job',
     'report_candidate_issue','add_note','search_notes','share_knowledge','find_similar','guide',
     'read_file','search_code','edit_file','file_status','standins_for'}
 PRESETS = {'full': ('All tools', None), 'matching': ('Matching essentials', MATCHING),
            'investigation': ('Compiler and data investigation', MATCHING | {'read_data','get_class','guess_struct','pe_imports','pe_data_refs',
-               'ps2_decompile','ps2_sdk_symbols','ps2_symbol_transfer',
+               'ps2_decompile','ps2_sdk_symbols','ps2_symbol_transfer','propose_sdk_name','verify_sdk_assembly',
                'compiler_map','try_compiler','compare_compilers','search_flags','compiler_experiments','get_compiler_trial',
                'suggest','report_boundary'}),
            'polishing': ('Polishing and names', REQUIRED | {'claim_readable','make_readable','tidy_done','rename_symbol',

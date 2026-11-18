@@ -434,6 +434,8 @@ class BriefMixin:
         # _struct_brief (layouts.py): its pointer arguments' likely structs
         for section in (self._debug_brief, self._class_brief, self._types_brief, self._compiler_brief, self._struct_brief):
             lines += section(fn, proj)
+        if lookup := self.console(proj).library_lookup:
+            lines += lookup.brief(self, proj, fn)
         twin = self._twin_lines(proj, fn) if fn["status"] != "matched" else []
         lines += twin
         alike = [] if twin else [(r, sim) for r, sim in self.similar(proj, fn, top=3) if r["status"] == "matched"]

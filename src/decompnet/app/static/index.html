@@ -426,6 +426,19 @@
         </div>
       </section>
       <div class="stack-col">
+        <section class="panel" id="sdkLibrariesPanel" hidden>
+          <header class="panel-head"><h2>SDK libraries</h2></header>
+          <div class="pad">
+            <p class="muted small">Register extracted SDK library folders in Compilers &amp; tools.</p>
+            <div id="sdkLibraryCopies"></div>
+            <div class="row">
+              <button class="primary small-btn" id="sdkLibrarySelect" type="button">Save and scan</button>
+              <button class="ghost small-btn" id="sdkLibraryScan" type="button">Scan again</button>
+            </div>
+            <pre class="joblog" id="sdkLibraryLog" hidden></pre>
+            <div id="sdkLibraryReview"></div>
+          </div>
+        </section>
         <section class="panel" id="scopePanel" hidden>
           <header class="panel-head"><h2>What this project covers</h2></header>
           <div class="pad">
@@ -439,6 +452,7 @@
           <header class="panel-head"><h2>About this project</h2></header>
           <div class="pad">
             <dl class="facts one" id="projFacts"></dl>
+            <label class="check" id="agentBackgroundJobsRow" hidden><input id="agentBackgroundJobs" type="checkbox"><span>Allow helpers and MCP users to start bounded background jobs</span></label>
             <div class="row"><button class="ghost small-btn" id="folderBtn" type="button">Open project folder</button></div>
             <div id="reimportGame">
               <p class="muted small">Choose your copy of the game again and replace its analysis. Matched C is kept only for functions whose target bytes are unchanged; changed functions reopen. Notes, settings and saved progress are kept. Helpers stop while the game is reimported.</p>
@@ -647,6 +661,7 @@
 <script src="/assets/js/compiler-groups.js"></script>
 
 <script src="/assets/js/deep-permuter.js"></script>
+<script src="/assets/js/sdk-libraries.js"></script>
 <script src="/assets/js/steering.js"></script>
 <script src="/assets/js/pages.js"></script>
 </body>

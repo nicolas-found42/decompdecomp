@@ -1,7 +1,13 @@
 # Matching PlayStation 2 code
 
-Use `ps2_decompile(function)` for Ghidra's R5900 pseudocode. `ps2_sdk_symbols(function)` checks SDK signatures.
+Use `ps2_decompile(function)` for Ghidra's R5900 pseudocode. Call `ps2_sdk_symbols(function)` when the code looks
+like an SDK routine. It can show local archive members for projects with SDK libraries. Send a promising candidate
+ID to `propose_sdk_name` for the owner to review. Keep the name provisional in your notes until the owner applies it.
 `ps2_symbol_transfer(function)` finds counterparts in the project's companion ELF (GT4 uses CORE.elf).
+
+When the owner enables background jobs, use `deep_permuter` for saved C that is close and differs mainly in register
+allocation or instruction order. It can take over your claim when the job starts. Check the result with
+`background_job`. A standalone project can also verify reproducible SDK stubs with `verify_sdk_assembly`.
 A signature or transfer hit is a lead. Verify the function boundary and use the byte judge for a match.
 `project_info` lists compiler IDs. When the instructions, stack frame, or global addressing suggest another
 profile, use `compare_compilers(function, compilers, flags, source)` to rank up to two plausible alternatives

@@ -440,6 +440,16 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"text": net.rename_symbol(agent, room.slug, str(d.get("old", "")), str(d.get("new", "")),
                                           str(d.get("message", "")))}
 
+    def sdk_libraries(room, member, d):
+        """A guest reads the host's archive evidence and can send names to desktop review."""
+        from . import tools
+
+        agent = room.agent_for(member, d.get("agent"))
+        if "candidate" in d:
+            return {"text": tools.call(net, agent, room.slug, "propose_sdk_name", {"candidate": d["candidate"]})}
+        return {"text": tools.call(net, agent, room.slug, "ps2_sdk_symbols",
+                                   {"function": str(d.get("function") or ""), "offset": d.get("offset", 0)})}
+
     def split(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
         return {"text": net.split_function(agent, room.slug, str(d.get("function", "")), str(d.get("at", "")),
@@ -509,6 +519,7 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/release", endpoint(release), methods=["POST"]),
         Route("/collab/context", endpoint(context), methods=["POST"]),
         Route("/collab/rename", endpoint(rename), methods=["POST"]),
+        Route("/collab/sdk-libraries", endpoint(sdk_libraries), methods=["POST"]),
         Route("/collab/split", endpoint(split), methods=["POST"]),
         Route("/collab/note", endpoint(note), methods=["POST"]),
         Route("/collab/leave", endpoint(leave), methods=["POST"]),

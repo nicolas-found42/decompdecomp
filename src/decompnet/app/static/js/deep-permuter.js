@@ -4,7 +4,7 @@
 const deepRuns = new Map();
 const deepFollowers = new Set();
 const deepKey = (slug = S.slug, name = S.fn) => `${slug}/${name}`;
-const deepActive = (job) => job && ["starting", "running"].includes(job.state);
+const deepActive = (job) => job && ["starting", "queued", "running"].includes(job.state);
 const deepMatch = (score, insns) => 100 * pctOf(score, insns);
 const deepPercent = (score, insns) => score == null || !insns ? "—" : `${(score === 0 ? 100 : Math.min(99.99, deepMatch(score, insns))).toFixed(2)}%`;
 const deepDuration = (seconds) => seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
@@ -55,7 +55,7 @@ function renderDeepSearch() {
   const p = job.progress || {};
   const result = job.result || {};
   const best = result.best_score ?? p.best_score;
-  const status = job.stopping ? "Stopping search…" : job.state === "starting" ? "Starting search…" : job.state === "running" ? "Searching for a closer match" : job.state === "cancelled" ? "Stopped · improvements saved" : job.state === "error" ? "Search could not finish" : result.matched ? "Byte-identical match found" : `Finished · ${(result.reason || "search complete").toLowerCase()}`;
+  const status = job.stopping ? "Stopping search…" : job.state === "starting" ? "Starting search…" : job.state === "queued" ? "Queued for a compiler slot" : job.state === "running" ? "Searching for a closer match" : job.state === "cancelled" ? "Stopped · improvements saved" : job.state === "error" ? "Search could not finish" : result.matched ? "Byte-identical match found" : `Finished · ${(result.reason || "search complete").toLowerCase()}`;
   $("deepStatus").textContent = job.high_performance ? `${status} · High performance` : status;
   $("deepResults").dataset.state = job.state;
   const tested = result.tested ?? p.tested ?? 0;

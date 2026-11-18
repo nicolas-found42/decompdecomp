@@ -256,6 +256,12 @@ Please [report problems](https://github.com/n-delic/decompdecomp/issues). The st
 
 **PS2 analysis.** Open **Compilers & tools → PS2**, open a tool, select a project and click **Run analysis**. Ghidra Emotion Engine shows a pseudocode draft for a hexadecimal function address. The PS2Recomp scanner lists possible SDK symbols in the boot ELF. PS2 symbol transfer compares those project functions with a second PS2 ELF. Choose the comparison file or place it at `analysis-inputs/CORE.elf` inside the project. Both searches report candidates for inspection. They leave names, claims and byte-match records intact. Agents can run the same tools with `ps2_decompile`, `ps2_sdk_symbols`, and `ps2_symbol_transfer`. Agents choose companion ELFs by filename from the project's `analysis-inputs` folder. Use `project_info` to list compiler profiles and `try_compiler` to test a candidate with one. The scanner installer needs a system C++17 compiler. The extension uses the app's pinned Ghidra 12.1.4 and Java 21 or newer.
 
+**Your PS2 SDK libraries.** Register an extracted EE library folder in **Compilers & tools → PS2 → PlayStation 2 SDK libraries**. Pick which folders to use in the project's **Settings → SDK libraries**. The scan checks imported functions and mapped overlays. Review each candidate's archive member and relocation evidence. You can approve several clear names together. Helpers and manual MCP clients use `ps2_sdk_symbols` to inspect candidates and `propose_sdk_name` to send them to your desktop. In a room, the host chooses the SDKs and approves the names.
+
+For the July 2005 SDK disc, the Apple Silicon build of WiseUnpacker 3.1.0 can read `Installers/RTLibs&ToolchainSetup.exe` directly. Extract it into a folder you control and register the resulting `MAINDIR/ee/lib` folder. [WiseUnpacker 3.1.0](https://github.com/mnadareski/WiseUnpacker/releases/tag/3.1.0).
+
+**Helper background jobs.** Enable bounded background jobs in project Settings to let helpers and manual MCP clients run `deep_permuter` and, in a standalone PS2 ROM project, `verify_sdk_assembly`. Use `background_job` to see a job's progress or cancel it. The project can queue one job while another is running. Deep permuter works on saved C and keeps improvements as it finds them.
+
 **C and C++.** GameCube, Wii, PS2 and Windows PC games are often C++. On these platforms, agents can write
 classes and methods, and decompdecomp changes the C++ names back to the names of the game. N64 games use
 C. Public decomps use the language of their project.

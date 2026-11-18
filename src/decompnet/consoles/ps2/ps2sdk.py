@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.request import urlopen
 
 from ... import toolchains
-from ...compiler import run_in
+from ...compiler import cancellable, run_in
 from ...elfobj import extract_function
 from ...network import NetworkError
 from ...project import compiler_config
@@ -93,7 +93,9 @@ def verify(net, proj, log=print, *, saved=None):
     if not net.is_rom(proj) or slug in net.rooms or slug in net.links:
         raise NetworkError("Assembly verification needs a standalone ROM project.")
     log("Assembling the pinned PS2SDK kernel sources")
-    routines = kernel_routines()
+    check_cancel = getattr(log, "check_cancel", lambda: None)
+    with cancellable(check_cancel):
+        routines = kernel_routines()
     recorded = held = 0
     with net.store.tx() as db:
         net._expire_claims(db)
@@ -102,6 +104,7 @@ def verify(net, proj, log=print, *, saved=None):
             "WHERE f.project_id=? AND f.status IN ('open','asm') AND f.size=length(f.target) "
             "AND f.asm_verification IS NULL", (proj["id"],))
         for fn in rows.fetchall():
+            check_cancel()
             key = (fn["name"], fn["vram"])
             if saved is not None and key not in saved:
                 continue

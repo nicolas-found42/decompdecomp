@@ -15,6 +15,7 @@ import secrets
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1390,13 +1391,13 @@ class Network:
                 if self._effective_unit(f, units) == unit]
 
     def regression_test(self, proj, header: str | None, sources: dict[int, str] | None = None,
-                        only: list | None = None, header_for=None) -> list[tuple[str, str]]:
+                        only: list | None = None, header_for=None, scope=nullcontext) -> list[tuple[str, str]]:
         """Every matched function (or `only`) built again with a changed header or sources: (name, why) of each
         that no longer matches, so a header edit that breaks matches is refused."""
         matched = only if only is not None else self.store.all(
             "SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
 
-        def check(fn) -> tuple[str, str] | None:
+        def evaluate(fn) -> tuple[str, str] | None:
             res = self._compile(proj, header_for(fn) if header_for else header,
                                 (sources or {}).get(fn["id"], fn["matched_source"]), fn)
             if not res.ok:
@@ -1408,6 +1409,10 @@ class Network:
             if cand is None or not verdict:
                 return fn["name"], "compiles but no longer matches"
             return None
+
+        def check(fn) -> tuple[str, str] | None:
+            with scope():
+                return evaluate(fn)
 
         if not matched:  # nothing to protect, but the header must at least parse
             if header is None:

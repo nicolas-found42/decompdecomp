@@ -3,6 +3,7 @@ built-in API agent. Every tool works on the project the agent was started on."""
 
 from __future__ import annotations
 
+import json
 import re
 from importlib import resources
 from typing import Callable
@@ -255,6 +256,10 @@ def project_info(net: RomNetwork, slug: str) -> str:
     if (order := net.claim_order(slug)):
         text += (f"\nThe project's owner chose the order helpers take functions in: {CLAIM_ORDERS[order]}. "
                  "claim_function without a function follows it; name a function to get that one.\n")
+    from .project_jobs import ENABLED
+
+    if net.cfg(net.project_row(slug)).get(ENABLED) and not net._link(slug):
+        text += "\nThe owner enabled bounded background jobs. Use deep_permuter for a saved near match.\n"
     return text + (f"\nThe user's instructions for this project (they come first):\n{wish}" if wish else "")
 
 
@@ -309,6 +314,40 @@ def _add_note(net: RomNetwork, agent: Agent, slug: str, text: str, function: str
     return net.add_note(agent, slug, text, function)
 
 
+def _propose_sdk_name(net: RomNetwork, agent: Agent, slug: str, candidate: str) -> str:
+    if link := net._link(slug):
+        return link.call("/collab/sdk-libraries", agent, candidate=candidate)
+    proj = net.project_row(slug)
+    return net.console(proj).library_lookup.propose(net, proj, agent, candidate)
+
+
+def _sdk_symbols(net: RomNetwork, agent: Agent, slug: str, function: str = "", offset: int = 0) -> str:
+    if link := net._link(slug):
+        return link.call("/collab/sdk-libraries", agent, function=function, offset=offset)
+    return ps2_analysis.for_agent(net, slug, "sce-scan", function, offset)
+
+
+def _background(net: RomNetwork):
+    jobs = getattr(net, "project_jobs", None)
+    if jobs is None:
+        raise NetworkError("Open the project in the decompdecomp app to use background jobs.")
+    return jobs
+
+
+def _deep_search(net: RomNetwork, agent: Agent, slug: str, function: str, minutes: int = 10, variants: int = 500) -> str:
+    job = _background(net).deep_search(slug, function, minutes, variants, agent=agent)
+    return f"Deep permuter job {job}. Use background_job(job='{job}') for its status or to cancel it."
+
+
+def _verify_sdk_assembly(net: RomNetwork, agent: Agent, slug: str) -> str:
+    job = _background(net).verify_assembly(slug, agent=agent)
+    return f"SDK assembly verification job {job}. Use background_job(job='{job}') for its status."
+
+
+def _background_job(net: RomNetwork, agent: Agent, slug: str, job: str, cancel: bool = False) -> str:
+    return json.dumps(_background(net).status(slug, job, agent=agent, cancel=cancel))
+
+
 HANDLERS: dict[str, Callable[..., str]] = {
     "project_info": lambda net, agent, slug: project_info(net, slug),
     "claim_function": lambda net, agent, slug, function="", strategy="", count=1:
@@ -347,8 +386,11 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.suggest(agent, slug, text, compiler, flags, function or None, ranges, source),
     "ps2_decompile": lambda net, agent, slug, function, offset=0:
         ps2_analysis.for_agent(net, slug, "r5900", function, offset),
-    "ps2_sdk_symbols": lambda net, agent, slug, function="", offset=0:
-        ps2_analysis.for_agent(net, slug, "sce-scan", function, offset),
+    "ps2_sdk_symbols": _sdk_symbols,
+    "propose_sdk_name": _propose_sdk_name,
+    "deep_permuter": _deep_search,
+    "verify_sdk_assembly": _verify_sdk_assembly,
+    "background_job": _background_job,
     "ps2_symbol_transfer": lambda net, agent, slug, function="", offset=0, companion="CORE.elf":
         ps2_analysis.for_agent(net, slug, "transfer", function, offset, companion),
     "try_compiler": lambda net, agent, slug, function, compiler, flags="", source="":
@@ -379,7 +421,8 @@ READ_ONLY = frozenset(PS2_ANALYSIS | REFERENCE_TOOLS | {"project_info", "get_fun
                        "guess_struct", "compiler_map", "list_functions", "search_flags", "compare_compilers", "search_notes",
                        "find_similar", "guide", "read_file", "search_code", "file_status", "standins_for"})
 
-ROM_ONLY = PS2_ANALYSIS | {"get_context", "edit_context", "split_function", "redraft", "search_flags", "compare_compilers"}
+ROM_ONLY = PS2_ANALYSIS | {"get_context", "edit_context", "split_function", "redraft", "search_flags", "compare_compilers",
+                           "propose_sdk_name", "verify_sdk_assembly"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file", "join_functions", "tidy_done",
              "standins_for"}
 LTCG_ONLY = {"standins_for"}  # only projects of games built with link-time code generation have harness/ files
@@ -395,6 +438,12 @@ def _supports(console, name: str, fork: bool) -> bool:
     """Whether `console` can do `name` in this kind of project. A tool no console lacks keeps its place."""
     if name in PS2_ANALYSIS:
         return "ps2_analysis" in console.features and not fork
+    if name == "propose_sdk_name":
+        # A public build has no app-wide mapping from the original linked EE image to its source functions.
+        # Its objdiff target objects do not provide the imported ROM addresses used in SDK name reviews.
+        return bool(console.library_lookup and not fork)
+    if name == "verify_sdk_assembly":
+        return bool(console.verify_assembly and not fork)
     if name == "join_functions":
         # Project mode's joins are the console's (Console.join_functions); a ROM's are the engine's (#192).
         return console.joins_functions if fork else _rom_joins()
@@ -497,6 +546,7 @@ ALWAYS_LOAD = agents.TOOL_META
 
 
 HEAVY_TOOLS = frozenset(PS2_ANALYSIS | {"compile_and_diff", "search_code", "search_flags", "try_compiler", "compare_compilers",
+                                       "propose_sdk_name",
                          "edit_file", "split_file", "join_functions"})
 
 
@@ -742,8 +792,28 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def ps2_sdk_symbols(ctx: Context, function: str = "", offset: int = 0) -> str:
-        """Find SDK signature candidates for a PS2 function, or browse the project's scan. offset continues a page."""
+        """Find SDK signatures and local SDK archive evidence. Specify a function or continue a page with offset."""
         return await run(ctx, "ps2_sdk_symbols", function=function, offset=offset)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def propose_sdk_name(ctx: Context, candidate: str) -> str:
+        """Send a candidate ID from ps2_sdk_symbols to the owner's desktop review. The owner applies names."""
+        return await run(ctx, "propose_sdk_name", candidate=candidate)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def deep_permuter(ctx: Context, function: str, minutes: int = 10, variants: int = 500) -> str:
+        """Search a function's saved C for a closer match. Use on near misses after the owner enables jobs."""
+        return await run(ctx, "deep_permuter", function=function, minutes=minutes, variants=variants)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def verify_sdk_assembly(ctx: Context) -> str:
+        """Check reproducible SDK assembly in this standalone project, when the owner enables jobs."""
+        return await run(ctx, "verify_sdk_assembly")
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def background_job(ctx: Context, job: str, cancel: bool = False) -> str:
+        """Read project job status, or cancel a job started by this client."""
+        return await run(ctx, "background_job", job=job, cancel=cancel)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def ps2_symbol_transfer(ctx: Context, function: str = "", offset: int = 0, companion: str = "CORE.elf") -> str:

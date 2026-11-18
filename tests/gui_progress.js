@@ -34,6 +34,7 @@ const cases = [
   ["steering", '$("setTcSave").onclick = async () => {', '\n};', "setTcLog", "setTcSave"],
   ["agents", 'if (inst) inst.onclick = async () => {', '\n  };', "log", "inst"],
   ["pages", 'b.onclick = async () => {', '\n    };', "log", "b"],
+  ["sdk-libraries", 'async function runSdkLibraryAction(action, extras = {}) {', '\n}\n', "sdkLibraryLog", "sdkLibraryScan"],
 ];
 function setup(file, marker, end, logId, buttonId, ranges = "") {
   const elements = new Map();
@@ -42,18 +43,20 @@ function setup(file, marker, end, logId, buttonId, ranges = "") {
   get("agList").querySelector = () => log; const input = element();
   const box = { querySelector: (selector) => selector === "[data-log]" ? log : get(selector.replace(/^#/, "")), querySelectorAll: () => [input] };
   get("srcState").querySelectorAll = () => [button];
+  get("sdkLibrariesPanel").querySelectorAll = () => [button];
+  get("sdkLibrariesPanel")._slug = "test";
   get("setRanges").value = ranges;
   get("rLink").value = "https://room.test"; get("jPath").value = "game";
   const start = deferred(), poll = deferred();
   let polls = 0;
   const ctx = {
     $: get, document: { createElement: element },
-    S: { slug: "test", ov: { kind: "fork" } }, info: {}, box, body: box, n: get("compilerNotice"), log, inst: button,
+    S: { slug: "test", ov: { kind: "fork" } }, action: "scan", extras: {}, info: {}, box, body: box, n: get("compilerNotice"), log, inst: button,
     b: Object.assign(button, { dataset: { inst: "test" } }), a: { id: "test", name: "Test" }, ROOM_PORT: 6481,
     dialog: () => box, id: "test", proprietary: false, confirm: () => true, Blob, location: {},
     esc: String, plural: () => "files", clock: () => "12:00", toast() {}, loadNav() {}, closeDialog() {}, rerender() {}, check() {},
     fields: () => ({}), joinProblem: () => "", exportOpen: () => true, cmdBox: () => "", wireCopies() {},
-    renderHost() {}, renderTools() {}, renderStats() {}, renderSource() {}, renderProjectSettings() {},
+    renderHost() {}, renderTools() {}, renderStats() {}, renderSource() {}, renderProjectSettings() {}, loadSdkLibraries() {},
     showAgentsPage() {}, loadState: async () => {}, refreshMap: async () => {},
     sleep: async () => {},
     api(url) {

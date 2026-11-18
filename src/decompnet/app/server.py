@@ -25,7 +25,7 @@ from starlette.responses import JSONResponse, Response
 from .. import agents as kinds
 from .. import hostenv, wine
 from ..network import NetworkError
-from . import agents, collab, routes, saves, tools, updates, window
+from . import agents, collab, project_jobs, routes, saves, tools, updates, window
 from .engine import RomNetwork
 from .routes import forks, life, pages, projects, rooms, setup, state
 from .support import Jobs, Settings, session_options
@@ -38,9 +38,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     build_id = (updates.installed().get("commit") or "")[:12]  # a branch install: the commit it came from
     manager = agents.Manager(net, home, mcp_url)
     jobs = Jobs(home / "logs" / "decomp.log")
+    net.project_jobs = project_jobs.ProjectJobs(net, jobs)
 
     def busy() -> bool:
-        return bool(manager.running()) or any(j["state"] == "running" for j in jobs.jobs.values())
+        return bool(manager.running()) or any(j["state"] in project_jobs.ACTIVE for j in jobs.jobs.values())
 
     def window_ended():
         """The window ended without the app asking (the page found nothing working, or it crashed): quit, unless
@@ -54,6 +55,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     def quit_app() -> None:
         """Quit means quit: the window, every helper with everything it started, then the server."""
         window.close_app()
+        net.project_jobs.shutdown()
         manager.shutdown()
         flush_progress()
         wine.stop()  # (its wine server would otherwise stay up to 10 minutes after the last compile)
@@ -205,6 +207,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return JSONResponse({"error": str(e)}, status_code=code)
 
     def before_restart() -> None:  # helpers stop now and resume in the new version; the window closes with the process
+        net.project_jobs.shutdown()
         manager.shutdown()
         flush_progress()
 

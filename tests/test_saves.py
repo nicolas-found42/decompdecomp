@@ -267,10 +267,7 @@ def test_a_whole_decomp_folder_copied_elsewhere_keeps_its_projects(tmp_path):
                    (str(old_root), json.dumps({"progress_folder": str(old_root / "progress"),
                                                "save_folder": str(old_root / "exports")})))
     # Moving the folder is an offline operation; Windows won't remove open database files.
-    reader = getattr(net.store._local, "conn", None)
-    if reader is not None:
-        reader.close()
-    net.store.conn.close()
+    net.store.close()
     shutil.copytree(old_home, new_home)
     shutil.rmtree(tmp_path / "old")
     moved = RomNetwork(new_home / "decomp.db", new_home)

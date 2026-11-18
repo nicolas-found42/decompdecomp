@@ -33,6 +33,21 @@ def test_many_read_threads_open_only_a_bounded_number_of_connections(tmp_path, m
     assert 0 < len(opened) <= 12
 
 
+def test_close_releases_the_writer_and_pooled_readers(tmp_path):
+    db = store.Store(tmp_path / "project.db")
+    with db._reader() as first, db._reader() as second:
+        assert first is not second
+
+    db.close()
+    db.close()
+
+    for connection in (db.conn, first, second):
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        db.one("SELECT 1")
+
+
 @pytest.mark.parametrize("path", ["disk", ":memory:"])
 def test_a_read_inside_a_write_sees_uncommitted_changes_and_rollback(tmp_path, path):
     db = store.Store(tmp_path / "project.db" if path == "disk" else path)

@@ -54,6 +54,7 @@ class Toolchain:
     source: str
     description: str = ""
     family: str = ""  # display grouping for related compiler builds
+    own_build: str = ""  # compiler banner shared by the recipes that can use the same local copy
     kind: str = "compiler"  # compiler | runtime | tool
     platform: str = ""
     arch: str = ""

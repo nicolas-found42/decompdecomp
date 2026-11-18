@@ -454,6 +454,8 @@ def test_your_copy_of_a_packs_compiler_builds_the_same_object_from_your_folder(t
 
     if toolchains.installed(pack) is None:
         pytest.skip(f"needs the {pack} pack")
+    if toolchains.get(pack).via_vm:
+        pytest.skip(f"{pack} is installed as a guest recipe rather than a local compiler folder")
     real = toolchains.require(pack).parent
     scratch = tmp_path / "toolchains"
     scratch.mkdir()
@@ -490,20 +492,36 @@ def _code(obj: bytes) -> dict:
     return out
 
 
+@pytest.mark.parametrize(("banner", "expected"), [
+    (b"2.96-ee-001003-1", {"ee-gcc-2.96", "ee-gcc-2.96-as2004"}),
+    (b"2.9-ee-991111", {"ee-gcc-2.9-991111", "ee-gcc-2.9-as296"}),
+    (b"2.9-ee-991111-01", {"ee-gcc-2.9-991111-01"}),
+    (b"3.2-ee-040921", {"ee-gcc-3.2", "ee-gcc-3.2-040921"}),
+])
+def test_an_ee_gcc_copy_uses_its_build_banner_for_compatible_recipes(tmp_path, banner, expected):
+    folder = _own(tmp_path / "sdk", "bin/ee-gcc", banner + b"\0/host/gcc/2.9-gnupro/include/\0")
+    found = kits.get("own-ps2").compilers(folder)
+    assert {c.like for c in found} == expected
+    assert {c.build for c in found} == {banner.decode()}
+
+
 def test_each_installed_pack_is_known_as_itself():
-    """A pack's own folder, read as your own copy, runs like that pack alone: its version is read as a whole number
-    ("2.96" isn't "3.2"), and from a program's version record (CodeWarrior PS2 3.0.1.145). The PS1's two GCC 2.7.2s
-    are one version run two ways: a copy of either is offered as both."""
+    """A copy of an installed compiler offers the recipes for that compiler build."""
     from decompnet.kits import owncompiler
 
-    both = {"gcc-2.7.2-psx", "gcc-2.7.2-cdk-psx"}
+    equivalent = (
+        {"gcc-2.7.2-psx", "gcc-2.7.2-cdk-psx"},
+        {"ee-gcc-2.9-991111", "ee-gcc-2.9-as296"},
+        {"ee-gcc-2.96", "ee-gcc-2.96-as2004"},
+        {"ee-gcc-3.2", "ee-gcc-3.2-040921"},
+    )
     checked = 0
     for kit in owncompiler.OWN_COMPILERS:
         for pack in owncompiler.packs(kit.platform):
-            if toolchains.installed(pack) is None:
+            if toolchains.installed(pack) is None or toolchains.get(pack).via_vm:
                 continue
-            got = [c.like for c in kit.compilers(toolchains.require(pack))]
-            assert got == [pack] or (pack in both and set(got) == both), (pack, got)
+            got = {c.like for c in kit.compilers(toolchains.require(pack))}
+            assert got == next((same for same in equivalent if pack in same), {pack}), (pack, got)
             checked += 1
     if not checked:
         pytest.skip("needs a ROM console's compiler pack")

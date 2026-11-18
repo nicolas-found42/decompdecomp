@@ -955,7 +955,7 @@ def test_dirty_triggers_never_fail_writes_for_rows_left_by_a_removed_project(tmp
         db.execute("DELETE FROM context_versions WHERE project_id=999")
         db.execute("DELETE FROM knowledge WHERE project_id=999")
     assert net.store.one("SELECT 1 FROM progress_dirty WHERE project_id=999") is None
-    net.store.conn.close()
+    net.store.close()
 
     reopened = RomNetwork(database, tmp_path)  # opening removes the leftover symbols; the triggers must not fail it
     assert reopened.store.one("SELECT name FROM functions WHERE project_id=999")["name"] == "orphan"

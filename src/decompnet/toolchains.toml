@@ -235,6 +235,7 @@ subdir = "maspsx-e85ecb373828aabea96d7e6400974d4f91ce8c74"
 platforms = ["linux-x86_64", "macos-x86_64", "macos-arm64"]
 
 ["ee-gcc-2.96"]
+own_build = "2.96-ee-001003-1"
 linux_vm = true
 cplusplus = true
 name = "EE-GCC 2.96"
@@ -255,6 +256,7 @@ sha256 = "0590d2ca9da8f5903889d66761220d14b47a8d14ba987ca53db84a1650a1fd0a"
 platforms = ["linux-x86_64"]
 
 ["ee-gcc-2.9-991111"]
+own_build = "2.9-ee-991111"
 linux_vm = true
 cplusplus = true
 name = "EE-GCC 2.9 (991111)"
@@ -272,6 +274,7 @@ sha256 = "99cb5db603cd985b50fc6851157020ad69489f2227309ccf825bd43ac7bc19dd"
 platforms = ["linux-x86_64"]
 
 ["ee-gcc-2.9-991111-01"]
+own_build = "2.9-ee-991111-01"
 linux_vm = true
 cplusplus = true
 name = "EE-GCC 2.9 (991111-01)"
@@ -289,6 +292,7 @@ sha256 = "ed684fd98f89d36b0121caab311052089103e3b36241fcef4338cc9ea41c75b8"
 platforms = ["linux-x86_64"]
 
 ["ee-gcc-2.9-as296"]
+own_build = "2.9-ee-991111"
 linux_vm = true
 cplusplus = true
 name = "EE-GCC 2.9 (991111) with the EE-GCC 2.96 assembler"
@@ -306,6 +310,7 @@ sha256 = "99cb5db603cd985b50fc6851157020ad69489f2227309ccf825bd43ac7bc19dd"
 platforms = ["linux-x86_64"]
 
 ["ee-gcc-3.2-040921"]
+own_build = "3.2-ee-040921"
 linux_vm = true
 cplusplus = true
 name = "EE-GCC 3.2 (040921)"
@@ -323,6 +328,7 @@ sha256 = "8c60ca7482523190e999524a7e4de2379dcf7ffee543c1b5663bfdf6a80ebf0f"
 platforms = ["linux-x86_64"]
 
 ["ee-gcc-2.96-as2004"]
+own_build = "2.96-ee-001003-1"
 linux_vm = true
 cplusplus = true
 name = "EE-GCC 2.96 with the 2004 assembler"
@@ -372,6 +378,7 @@ sha256 = "3b6ae6897229ad005aaf1b0afaa1f3cb46e74b4c21a42e01130c07c0c598067f"
 platforms = ["linux-x86_64", "macos-x86_64", "macos-arm64"]
 
 ["ee-gcc-3.2"]
+own_build = "3.2-ee-040921"
 linux_vm = true
 cplusplus = true
 name = "EE-GCC 3.2 (040921)"

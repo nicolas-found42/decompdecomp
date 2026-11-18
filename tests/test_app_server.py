@@ -25,15 +25,23 @@ needs_demo = pytest.mark.skipif(toolchains.installed("gcc-2.7.2-kmc") is None or
 PORT, SECRET = 6499, "s3cret-for-tests"
 
 
-@pytest.fixture(scope="module")
-def app(tmp_path_factory):
-    home = tmp_path_factory.mktemp("home")
+def _make_app(home):
     (home / ".decomp").mkdir()
     net = RomNetwork(home / ".decomp" / "decomp.db", home)
     mcp, manager, security, _ = build(net, home / ".decomp", PORT, SECRET)
     app = mcp.streamable_http_app(transport_security=security, host="127.0.0.1")
     client = TestClient(app, base_url=f"http://127.0.0.1:{PORT}", headers=WINDOW)
     return client, net, manager
+
+
+@pytest.fixture(scope="module")
+def app(tmp_path_factory):
+    return _make_app(tmp_path_factory.mktemp("home"))
+
+
+@pytest.fixture
+def jobs_app(tmp_path):
+    return _make_app(tmp_path)
 
 
 WINDOW = {"User-Agent": f"Mozilla/5.0 AppleWebKit/605.1.15 {window.TOKEN_AGENT}{SECRET}"}
@@ -68,12 +76,12 @@ def test_mcp_discovery_offers_deep_permuter_but_requires_owner_enablement(tmp_pa
     assert denied.status_code == 401
 
 
-def test_deep_permuter_job_can_be_found_and_stopped_from_the_function(app, monkeypatch):
+def test_deep_permuter_job_can_be_found_and_stopped_from_the_function(jobs_app, monkeypatch):
     from decompnet.app import deep_permuter
 
     from .test_loading import tiny_game
 
-    client, net, _ = app
+    client, net, _ = jobs_app
     tiny_game(net, "deep-job")
     started = threading.Event()
     release = threading.Event()
@@ -116,13 +124,13 @@ def test_deep_permuter_job_can_be_found_and_stopped_from_the_function(app, monke
     assert found["last"]["progress"]["best_score"] == 20
 
 
-def test_deep_searches_are_capped_app_wide_below_the_shared_workers(app, monkeypatch):
+def test_deep_searches_are_capped_app_wide_below_the_shared_workers(jobs_app, monkeypatch):
     """#244: a fixed cap of 2 searches could take every shared worker of a small machine."""
     from decompnet.app import deep_permuter
 
     from .test_loading import tiny_game
 
-    client, net, _ = app
+    client, net, _ = jobs_app
     tiny_game(net, "capped-a")
     tiny_game(net, "capped-b")
     started, release = threading.Event(), threading.Event()
@@ -151,12 +159,12 @@ def test_deep_searches_are_capped_app_wide_below_the_shared_workers(app, monkeyp
         time.sleep(.01)
 
 
-def test_rom_deep_search_defaults_to_ten_workers_and_runs_alone(app, monkeypatch):
+def test_rom_deep_search_defaults_to_ten_workers_and_runs_alone(jobs_app, monkeypatch):
     from decompnet.app import deep_permuter
 
     from .test_loading import tiny_game
 
-    client, net, _ = app
+    client, net, _ = jobs_app
     started, release = threading.Event(), threading.Event()
     for slug in ("deep-fork", "deep-rom", "deep-rom-old-client", "another-deep-rom"):
         tiny_game(net, slug)

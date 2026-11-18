@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, wait
 
+from ..compiler import COMPILER_SLOTS, cancellable
 from ..network import NetworkError
 from ..project import compiler_for
 from . import permuter_local, workers
@@ -20,6 +23,30 @@ from .permute import Permuter, State
 # Its own worker, not the automatic permuter's "permuter" (network.MACHINE_AGENTS): sharing that name, a claim the
 # automatic permuter took between this search's turns looked like the search's own, and ended it (#244).
 AGENT = "deep-permuter"
+HIGH_PERFORMANCE_WORKERS = 10
+_trial_pools: dict[int, ThreadPoolExecutor] = {}
+_trial_lock = threading.Lock()
+
+
+def high_performance_available() -> bool:
+    return COMPILER_SLOTS >= HIGH_PERFORMANCE_WORKERS + 2
+
+
+def trial_width(fork: str | None) -> int:
+    if fork:
+        return 1
+    if high_performance_available():
+        return HIGH_PERFORMANCE_WORKERS
+    return max(1, min(6, COMPILER_SLOTS - 2))
+
+
+def trial_pool(width: int) -> ThreadPoolExecutor:
+    """ROM searches share a trial pool and still acquire the app-wide compiler slots."""
+    with _trial_lock:
+        if width not in _trial_pools:
+            _trial_pools[width] = ThreadPoolExecutor(width, thread_name_prefix="deep-trial",
+                                                     initializer=workers._lower_priority)
+        return _trial_pools[width]
 
 
 def max_searches() -> int:
@@ -30,6 +57,10 @@ def max_searches() -> int:
 
 
 class SearchLimit(Exception):
+    pass
+
+
+class TrialStopped(Exception):
     pass
 
 
@@ -50,8 +81,9 @@ def validate(net, slug: str, name: str, minutes: int, max_variants: int):
 
 
 class Search(Permuter):
-    def __init__(self, net, minutes: int, max_variants: int, log):
+    def __init__(self, net, minutes: int, max_variants: int, log, *, fork: str | None = None):
         super().__init__(net)
+        self.trial_workers = trial_width(fork)
         self.deadline = time.monotonic() + minutes * 60
         self.limit = max_variants
         self.log = log
@@ -119,9 +151,9 @@ class Search(Permuter):
         # bookkeeping, not a compiler input: including it stopped the search after a win.
         config = json.loads(fresh_proj["config"])
         compiler = compiler_for(config, fresh_fn["vram"]) if config.get("compiler") else {}
-        inputs = (json.dumps({"compiler": compiler, "gp": config.get("gp"),
-                              "big_endian": config.get("big_endian"), "platform": config.get("platform")},
-                             sort_keys=True), ctx["header"], ctx["version"],
+        inputs = (json.dumps({"compiler": compiler, **{key: config.get(key) for key in
+                              ("gp", "big_endian", "platform", "segments", "rom")}}, sort_keys=True),
+                  fresh_proj["root"], id(self.net.symbols(proj["id"])), ctx["header"], ctx["version"],
                   tuple(fresh_fn[k] for k in ("id", "target", "relocs", "vram", "unit", "n_insns")))
         return hashlib.sha256(repr(inputs).encode()).digest()
 
@@ -149,13 +181,132 @@ class Search(Permuter):
         self.report()
         return score
 
-    def _score(self, agent, proj, fn, source, best, fork):
+    def _check_deadline(self):
         self.log.check_cancel()
         if time.monotonic() >= self.deadline:
             raise SearchLimit("Time limit reached")
+
+    def _generate(self, gen, job):
+        return gen.batch(job, check_cancel=self._check_deadline)
+
+    def _check_scope(self, proj, fn, scope):
+        if self.input_scope(proj, fn, None) != scope:
+            raise SearchLimit("Compiler, header or target changed; run the search again")
+
+    def _publish_trial(self, agent, proj, fn, ctx, scope, source, diff):
+        progress = self.net.progress
+        progress.sync(proj["slug"], force=True)
+        with progress._project_lock(proj["slug"]), self.net.store.tx():
+            self._check_deadline()
+            self._check_scope(proj, fn, scope)
+            current = self.net._function(fn["name"], proj["slug"])
+            if current["status"] != "open" or not self._renew(agent, fn):
+                raise SearchLimit("The function is no longer held by this search")
+            if current["best_score"] is None or diff.score < current["best_score"]:
+                self.net._record(current, agent, diff.score, source, ctx["version"], matched=diff.bytes_match,
+                                 via="permuter")
+            else:
+                return False
+        progress.sync(proj["slug"], force=True)
+        return True
+
+    def _trials(self, agent, proj, fn, batch, best, fork, deadline, st):
+        if fork or len(batch) <= 1 or self.trial_workers == 1:
+            yield from super()._trials(agent, proj, fn, batch, best, fork, deadline, st)
+            return
+
+        slug = proj["slug"]
+        with self.net.progress.judging(slug):
+            scope = self.baseline_scope or self.input_scope(proj, fn, None)
+            self._check_scope(proj, fn, scope)
+            ctx = self.net._context(proj["id"], fn["unit"])
+            for offset in range(0, len(batch), self.trial_workers):
+                if time.monotonic() >= deadline or st.stop.is_set():
+                    break
+                self._check_deadline()
+                self._check_scope(proj, fn, scope)
+                if not self._renew(agent, fn):
+                    raise SearchLimit("The function is no longer held by this search")
+                yield from self._trial_wave(agent, proj, fn, ctx, scope,
+                                            batch[offset:offset + self.trial_workers], best)
+
+    def _trial_wave(self, agent, proj, fn, ctx, scope, candidates, best):
+        stop = threading.Event()
+        futures = {}
+        pending = []
+
+        def check_cancel():
+            if stop.is_set():
+                raise TrialStopped
+            self._check_deadline()
+
+        def judge(source):
+            with cancellable(check_cancel):
+                check_cancel()
+                return self._judge_rom(proj, fn, ctx["header"], source)
+
+        try:
+            for source in candidates:
+                self._check_deadline()
+                self._visit()
+                key = (scope, hashlib.sha256(source.encode()).digest())
+                if key in futures:
+                    self.skipped += 1
+                    # The serial search sees a duplicate's cached score too; this can affect the next random seed.
+                    pending.append((source, key, None, futures[key]))
+                    continue
+                if key in self.recent:
+                    previous = self.recent[key]
+                    if previous is None or previous >= best():
+                        self.skipped += 1
+                        pending.append((source, key, previous, None))
+                        continue
+                if self.tested >= self.limit:
+                    break
+                future = futures[key] = trial_pool(self.trial_workers).submit(judge, source)
+                pending.append((source, key, None, future))
+                self.tested += 1
+            self.report()
+            for source, key, score, future in pending:
+                self._check_deadline()
+                if future is not None:
+                    try:
+                        diff = future.result()
+                    except NetworkError as error:
+                        yield source, None, error
+                        continue
+                    self._check_deadline()
+                    score = None if diff is None else (0 if diff.bytes_match else max(1, diff.score))
+                    if score is not None and score < best():
+                        if not self._publish_trial(agent, proj, fn, ctx, scope, source, diff):
+                            raise SearchLimit("The saved candidate changed; run the search again")
+                        if diff.bytes_match:
+                            stop.set()
+                    self._remember(key, score)
+                    self._note_score(best(), score)
+                yield source, score, None
+            if self.tested >= self.limit:
+                raise SearchLimit("Variant limit reached")
+        finally:
+            stop.set()
+            for future in futures.values():
+                future.cancel()
+            wait(futures.values())
+
+    def _visit(self):
         self.visited += 1
         if self.visited > max(100, self.limit * 20):
             raise SearchLimit("No new candidates available")
+
+    def _remember(self, key, score):
+        self.recent[key] = score
+        self.recent.move_to_end(key)
+        if len(self.recent) > 1024:
+            self.recent.popitem(last=False)
+
+    def _score(self, agent, proj, fn, source, best, fork):
+        self._check_deadline()
+        self._visit()
         scope = self.input_scope(proj, fn, fork)
         if self.baseline_scope is not None and scope != self.baseline_scope:
             raise SearchLimit("Compiler, header or target changed; run the search again")
@@ -171,16 +322,17 @@ class Search(Permuter):
         self.tested += 1
         if self.held and not self._renew(agent, fn):  # (another worker may have it by now: record nothing for it)
             raise SearchLimit("The function is no longer held by this search")
-        score = super()._score(agent, proj, fn, source, best, fork)
+        with cancellable(self._check_deadline):
+            score = super()._score(agent, proj, fn, source, best, fork)
         if self.input_scope(proj, fn, fork) != scope:
             raise SearchLimit("Compiler, header or target changed; run the search again")
         if scope is not None:
-            self.recent[key] = score
-            self.recent.move_to_end(key)
-            if len(self.recent) > 1024:
-                self.recent.popitem(last=False)
-        if self.measuring_baseline:
-            return score
+            self._remember(key, score)
+        if not self.measuring_baseline:
+            self._note_score(best, score)
+        return score
+
+    def _note_score(self, best, score):
         if self.starting_score is None:
             self.starting_score = self.best_score = best
             self.history = [{"tested": 0, "score": best}]
@@ -192,7 +344,6 @@ class Search(Permuter):
         self.report()
         if self.tested == 1 or self.tested % 25 == 0:
             self.log(f"Tested {self.tested} candidates; best score {min(best, score) if score is not None else best}.")
-        return score
 
 
 def run(net, slug: str, name: str, minutes: int, max_variants: int, log):
@@ -202,23 +353,26 @@ def run(net, slug: str, name: str, minutes: int, max_variants: int, log):
 
 def _run(net, slug: str, name: str, minutes: int, max_variants: int, log):
     proj, fn = validate(net, slug, name, minutes, max_variants)
-    search = Search(net, minutes, max_variants, log)
+    fork = net.fork_slug(slug)
+    search = Search(net, minutes, max_variants, log, fork=fork)
     search.report()
     state = State()
     agent, _ = net.local_agent(AGENT)
     reason = "Search ended"
     log("Deep permuter is testing this function with the project's compiler and byte comparison.")
+    if search.trial_workers > 1:
+        log(f"Judging batches with up to {search.trial_workers} compiler workers.")
     try:
         if not search._hold(agent, fn):
             raise NetworkError("This function was claimed meanwhile. Try again after it is released.")
         try:
             log("Checking the saved C against the current compiler, header and target.")
-            best = search.baseline(agent, proj, fn, net.fork_slug(slug))
+            best = search.baseline(agent, proj, fn, fork)
             if best > 0:
                 current = net._function(name, slug)
                 for family, candidate in permuter_local.variants(current["best_source"], name):
                     log.check_cancel()
-                    score = search._score(agent, proj, current, candidate, best, net.fork_slug(slug))
+                    score = search._score(agent, proj, current, candidate, best, fork)
                     if score is not None and score < best:
                         best = score
                         log(f"Local rewrite {family} improved the saved candidate.")

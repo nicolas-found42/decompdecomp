@@ -30,7 +30,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import wait
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -119,7 +119,7 @@ class Generator:
         finally:
             self._lines.put(_EOF)
 
-    def batch(self, job: dict) -> list[str] | None:
+    def batch(self, job: dict, check_cancel=None) -> list[str] | None:
         """Variants of a function's C (the job's fields: permuter_gen.py), or None when the generator can't read
         the C, has stopped or doesn't answer: then the simple rewrites take over."""
         try:
@@ -130,7 +130,11 @@ class Generator:
         deadline = time.monotonic() + GENERATOR_SECONDS
         variants: list[str] | None = []
         while True:
-            line = self._line(deadline)
+            if check_cancel:
+                check_cancel()
+            line = self._line(min(deadline, time.monotonic() + 0.1) if check_cancel else deadline)
+            if check_cancel and line is None and time.monotonic() < deadline:
+                continue
             if line is None or line is _EOF:
                 if line is _EOF:
                     try:
@@ -283,6 +287,18 @@ class Permuter:
         with self.net.store.tx() as db:
             db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
 
+    def _generate(self, gen, job):
+        return gen.batch(job)
+
+    def _trials(self, agent, proj, fn, batch, best, fork, deadline, st):
+        for cand in batch:
+            if cand is None or time.monotonic() >= deadline or st.stop.is_set():
+                break
+            try:
+                yield cand, self._score(agent, proj, fn, cand, best(), fork), None
+            except NetworkError as error:
+                yield cand, None, error
+
     def _permute(self, agent, proj, fn, st: State) -> None:
         if st.stop.is_set() or not self._hold(agent, fn):
             return
@@ -313,6 +329,10 @@ class Permuter:
                     log.info("permuter: decomp-permuter didn't start: %s", e)
             start_src = best_src = cur_src = fn["best_source"]
             best = cur = fn["best_score"]
+
+            def best_score():
+                return best
+
             deadline = self._turn_deadline()
             batches = misses = 0
             refused, taken = None, 0  # the last refusal of a variant (NetworkError), variants the project took
@@ -323,8 +343,8 @@ class Permuter:
                     # the demo ROM (at 45); taking turns, every one matched within 12 s
                     base = best_src if batches % 2 else start_src
                     batches += 1
-                    batch = gen.batch({"header": header, "source": base, "function": name, "family": family,
-                                       "seed": rng.randrange(MAX_SEED), "count": BATCH})
+                    batch = self._generate(gen, {"header": header, "source": base, "function": name, "family": family,
+                                                 "seed": rng.randrange(MAX_SEED), "count": BATCH})
                     if batch is None:  # C it can't read: the simple rewrites can still try
                         gen.close()
                         gen = None
@@ -337,31 +357,25 @@ class Permuter:
                     misses = 0 if batch[0] else misses + 1
                     if misses >= REWRITE_MISSES:
                         break
-                for cand in batch:
-                    if cand is None or time.monotonic() >= deadline or st.stop.is_set():
-                        break
-                    st.add(variants=1)
-                    try:
-                        score = self._score(agent, proj, fn, cand, best, fork)
-                    except NetworkError as e:
-                        # A variant the project won't take: decomp-permuter's inlining writes a helper function
-                        # beside the function, which compile_and_diff refuses in a fork. It's skipped like one that
-                        # doesn't compile; the refusal used to end the function's permuting for good (_turn) within
-                        # seconds of its first turn: 2 of 3 of an Xbox game's near misses
-                        refused = e
-                        continue
-                    taken += 1
-                    if score is None:
-                        continue
-                    if score < best:
-                        best, best_src = score, cand
-                        st.add(improved=1)
-                        if score == 0:
-                            st.add(matched=1)
-                            log.info("permuter: %s matched", fn["name"])
-                            break
-                    if score <= cur or rng.random() < 0.02:  # mostly downhill, now and then sideways off a plateau
-                        cur, cur_src = score, cand
+                with closing(self._trials(agent, proj, fn, batch, best_score, fork, deadline, st)) as trials:
+                    for cand, score, refusal in trials:
+                        st.add(variants=1)
+                        if refusal is not None:
+                            # Imported builds can refuse rewrites that put a helper beside the function.
+                            refused = refusal
+                            continue
+                        taken += 1
+                        if score is None:
+                            continue
+                        if score < best:
+                            best, best_src = score, cand
+                            st.add(improved=1)
+                            if score == 0:
+                                st.add(matched=1)
+                                log.info("permuter: %s matched", fn["name"])
+                                break
+                        if score <= cur or rng.random() < 0.02:  # mostly downhill, then sideways off a plateau
+                            cur, cur_src = score, cand
             if refused is not None and not taken:  # every variant refused: it's the C the turn started from
                 raise refused
         finally:
@@ -380,15 +394,21 @@ class Permuter:
                 res = self.net.forks.attempt(agent, fork, fn["name"], source, keep=False, quiet=best)
                 return res.get("score")
             ctx = self.net._context(proj["id"], fn["unit"])
-            result = self.net._compile(proj, ctx["header"], source, fn)
-            if not result.ok:
+            d = self._judge_rom(proj, fn, ctx["header"], source)
+            if d is None:
                 return None
-            cand, verdict, _ = self.net._evaluate(fn, proj, result.obj)
-            if cand is None:
-                return None
-            d = scoring.diff(self.net._target_obj(fn, proj), cand)
-            if verdict is not None:
-                d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
             if d.score < best:
                 self.net._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, via="permuter")
             return 0 if d.bytes_match else max(1, d.score)
+
+    def _judge_rom(self, proj, fn, header, source):
+        result = self.net._compile(proj, header, source, fn)
+        if not result.ok:
+            return None
+        cand, verdict, _ = self.net._evaluate(fn, proj, result.obj)
+        if cand is None:
+            return None
+        diff = scoring.diff(self.net._target_obj(fn, proj), cand)
+        if verdict is not None:
+            return scoring.DiffResult(0 if verdict else max(1, diff.score), diff.max_score, diff.rows, verdict)
+        return diff

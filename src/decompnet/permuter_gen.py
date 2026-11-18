@@ -24,7 +24,8 @@ type (`F(int, 0x20)`), and every object-like one, the header's and the source's 
 where it uses them, MSVC's words are rewritten (`msvc_as_c`; in the source, `Restorer` puts them back in each
 variant), and a header written for C++ is read as the C of its types (`cxx_as_c`, `type_names`). C++ in the
 function itself is read as far as `Restorer` says: methods (const ones too, `operator()` among them), scoped names,
-template arguments, references, constructors and temporaries. What isn't read yet, so such a function gets the
+template arguments, references, constructors and temporaries. GNU C jump tables use stand-ins for label addresses
+and computed gotos, restored before compilation. What isn't read yet, so such a function gets the
 simple rewrites only (tests/test_permute.py lists them): `enum class`, a `std::` container, an operator other than
 `()` (`operator+`), `noexcept` and `throw()`, `new` and `delete`.
 
@@ -42,7 +43,8 @@ SOURCE_STARTS = "DECOMPDECOMP_SOURCE_STARTS"  # a typedef put between the header
 TRIES_PER_VARIANT = 4  # rewrites can repeat or fail: give up on a job that yields nothing new this many times over
 MAX_SEED = 10**20
 # a comment, or a string or character literal (group 1), which keeps any /* inside it
-_COMMENT = re.compile(r'//[^\n]*|/\*.*?\*/|("(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\')', re.S)
+_C_LITERAL = r"\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'"
+_COMMENT = re.compile(rf'//[^\n]*|/\*.*?\*/|({_C_LITERAL})', re.S)
 
 
 def plain_c(text: str, directives: bool = True) -> str:
@@ -77,7 +79,7 @@ _NOTHING = re.compile(r"\b(?:__w64|__unaligned|__ptr32|__ptr64|__restrict)[ \t]*
 # what msvc_as_c leaves as it is: a preprocessor line (`#define WINAPI __stdcall` names the macro and gives its value,
 # which expand_macros puts in where it's used, later), a string or character; and a __declspec (group 1), which goes,
 # strings in it and all
-_AS_IS = re.compile(rf"(?m)^[ \t]*#(?:\\\n|[^\n])*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|({_DECLSPEC})[ \t]*")
+_AS_IS = re.compile(rf"(?m)^[ \t]*#(?:\\\n|[^\n])*|{_C_LITERAL}|({_DECLSPEC})[ \t]*")
 
 
 def msvc_as_c(text: str) -> str:
@@ -105,6 +107,9 @@ _TEMPLATE_ID = re.compile(rf"\b([A-Za-z_]\w*)\s*<({_TEMPLATE_ARGS})>(?=\s*[(:])"
 _TEMPLATE_BACK = re.compile(r"\bDDt(\d+)_\w*")
 _CONST_METHOD = re.compile(r"(?:(\(\s*)|)\)\s*const(\s*)(?=\{)")
 C_TYPE_WORDS = frozenset("void char short int long float double signed unsigned _Bool".split())
+_COMPUTED_GOTO = re.compile(rf'''{_C_LITERAL}|\bgoto\s*\*\s*(?P<target>(?:{_C_LITERAL}|[^'";])+);''')
+_LABEL_ADDRESS = re.compile(rf"{_C_LITERAL}|(?P<start>(?:\b(?:return|case|sizeof)\b|[\[({{,=?:!~|^*/%<>;]"
+                            rf"|&&|(?<!&)&(?!&)|(?<![+-])[+-](?![+-]))\s*)&&\s*(?P<label>[A-Za-z_]\w*)")
 
 
 def _body_depths(text: str) -> list[int]:
@@ -141,7 +146,30 @@ class Restorer:
         self.inline = found.group(0) if found else None
         self.suffixes = bool(_MSVC_SUFFIX.search(source))
         self.templates: list[str] = []
-        self.source = self._cxx_as_c(_EXTERN_C_AT.sub("", msvc_as_c(source)), set(types) | C_TYPE_WORDS)
+        c = self._cxx_as_c(_EXTERN_C_AT.sub("", msvc_as_c(source)), set(types) | C_TYPE_WORDS)
+        self.gnu_prefix = "DD_gnu_"
+        while self.gnu_prefix in c:
+            self.gnu_prefix += "_"
+        self.source = self._gnu_as_c(c)
+
+    def _gnu_as_c(self, text: str) -> str:
+        # Keep the computed jump a control-flow terminator in the AST. Wrap its target so the randomizer sees
+        # the expression and can keep its references in sync with the rest of the function.
+        def jump(m: re.Match) -> str:
+            return f"return {self.gnu_prefix}jump({m['target']});" if m['target'] is not None else m[0]
+
+        def address(m: re.Match) -> str:
+            return f"{m['start']}{self.gnu_prefix}addr_{m['label']}" if m['label'] is not None else m[0]
+
+        return _LABEL_ADDRESS.sub(address, _COMPUTED_GOTO.sub(jump, text))
+
+    def _gnu_back(self, text: str) -> str:
+        prefix = self.gnu_prefix
+        text = re.sub(rf"\breturn\s+{prefix}jump\s*(?=\()", "goto *", text)
+        text = re.sub(rf"\b{prefix}addr_([A-Za-z_]\w*)\b", r"(&&\1)", text)
+        if prefix in text:
+            raise ValueError("could not restore a rewritten computed goto")
+        return text
 
     def name(self, function: str) -> str:
         """`function` as the source pycparser reads names it (`A::f`: A__DDq__f)."""
@@ -185,7 +213,7 @@ class Restorer:
         return _TEMPLATE_BACK.sub(lambda m: self.templates[int(m.group(1))], variant)
 
     def restore(self, variant: str) -> str:
-        variant = self._cxx_back(variant)
+        variant = self._cxx_back(self._gnu_back(variant))
         variant = _STAND_IN.sub(lambda m: f"{'unsigned ' if m.group(1) else ''}__int{m.group(2)}", variant)
         if self.suffixes:
             variant = _C_SUFFIX.sub(lambda m: f"{m.group(1)}{m.group(2).lower()}i64", variant)
@@ -578,12 +606,14 @@ def main() -> int:
                     cand = Candidate.from_source(unit, EvalState(), name, weights, rng.randrange(1, MAX_SEED))
                 cand.randomize_ast()
                 variant = own_part(cand.ast)
+                if variant in seen:
+                    continue
+                restored = msvc.restore(variant)
             except Exception:  # a rewrite that trips over this code: start again from the source
                 cand = None
                 continue
-            if variant not in seen:
-                seen.add(variant)
-                yield {"variant": directives + msvc.restore(variant)}
+            seen.add(variant)
+            yield {"variant": directives + restored}
 
     for line in sys.stdin:
         if line.strip():

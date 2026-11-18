@@ -316,6 +316,7 @@ def register(app: App) -> None:
         return net.overview(slug)
 
     def p_deep_permuter(slug, request, data):
+        """Keep long searches behind the app window's explicit Start search action."""
         if request.method == "GET":
             name = request.query_params.get("name", "")
             latest = next((job for job in reversed(list(jobs.jobs.values())) if job["kind"] == "deep-permuter"
@@ -324,6 +325,7 @@ def register(app: App) -> None:
         name = str(data.get("name", ""))
         minutes = data.get("minutes", 10)
         variants = data.get("variants", 500)
+        high_performance = deep_permuter.trial_width(net.fork_slug(slug)) == deep_permuter.HIGH_PERFORMANCE_WORKERS
         with jobs._lock:
             running = [job for job in jobs.jobs.values() if job["kind"] == "deep-permuter"
                        and job["state"] == "running"]
@@ -332,12 +334,15 @@ def register(app: App) -> None:
                 return {"job": active["id"]}
             if any(job.get("slug") == slug for job in running):
                 raise NetworkError("Another function is being deep permuted in this project; stop it or wait for it to finish.")
+            if (high_performance and running) or any(job.get("high_performance") for job in running):
+                raise NetworkError("High performance runs one Deep permuter search at a time. Wait for the active search to finish.")
             if len(running) >= deep_permuter.max_searches():
                 raise NetworkError(f"{len(running)} deep {'search is' if len(running) == 1 else 'searches are'} "
                                    "already running, as many as this computer runs at once. Wait for one to finish.")
             deep_permuter.validate(net, slug, name, minutes, variants)
-            jid = jobs.start("deep-permuter", lambda log: deep_permuter.run(net, slug, name, minutes, variants, log))
-            jobs.jobs[jid].update({"slug": slug, "function": name})
+            jid = jobs.start("deep-permuter", lambda log: deep_permuter.run(net, slug, name, minutes, variants, log),
+                             cancelled="Deep permuter was cancelled.")
+            jobs.jobs[jid].update({"slug": slug, "function": name, "high_performance": high_performance})
         return {"job": jid}
 
     def p_save(slug, request, data):

@@ -56,7 +56,7 @@ function renderDeepSearch() {
   const result = job.result || {};
   const best = result.best_score ?? p.best_score;
   const status = job.stopping ? "Stopping search…" : job.state === "starting" ? "Starting search…" : job.state === "running" ? "Searching for a closer match" : job.state === "cancelled" ? "Stopped · improvements saved" : job.state === "error" ? "Search could not finish" : result.matched ? "Byte-identical match found" : `Finished · ${(result.reason || "search complete").toLowerCase()}`;
-  $("deepStatus").textContent = status;
+  $("deepStatus").textContent = job.high_performance ? `${status} · High performance` : status;
   $("deepResults").dataset.state = job.state;
   const tested = result.tested ?? p.tested ?? 0;
   $("deepStarting").textContent = deepPercent(p.starting_score, d?.insns);
@@ -111,11 +111,13 @@ async function reconnectDeepSearch(name) {
 $("deepStart").onclick = async () => {
   const slug = S.slug, name = S.fn, key = deepKey(slug, name);
   if (!name || $("deepStart").disabled) return;
-  deepRuns.set(key, { state: "starting", log: [], progress: {} });
+  // Older backends use this flag. Project-mode overviews also have a rom field for display.
+  const high_performance = Boolean(S.st?.deep_permuter_high_performance && S.ov?.rom && S.ov.kind !== "fork");
+  deepRuns.set(key, { state: "starting", high_performance, log: [], progress: {} });
   renderDeepSearch();
   try {
     const { job } = await api("/api/deep-permuter", { method: "POST", body: {
-      slug, name, minutes: Number($("deepMinutes").value), variants: Number($("deepVariants").value),
+      slug, name, minutes: Number($("deepMinutes").value), variants: Number($("deepVariants").value), high_performance,
     } });
     followDeepSearch(job, slug, name);
   } catch (error) {

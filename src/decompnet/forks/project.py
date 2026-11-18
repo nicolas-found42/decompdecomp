@@ -26,11 +26,13 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
 from decompnet.hostenv import NO_WINDOW, console_python, stop_process_tree
 
+from ..compiler import COMPILER_SLOTS, compiler_slots
 from ..limits import CompilerMemoryWatchdog, attach_job, capped, default_cap, killed_for_memory, release_job, stop_group
 from ..network import NetworkError
 from . import objdiff
@@ -49,6 +51,28 @@ _CONFIG_LOCK = threading.Lock()
 # Agents may only edit source and header files, never the project's build setup, targets or verification.
 EDITABLE = re.compile(r"\.(c|cc|cpp|cxx|h|hh|hpp|hxx|inc|inl)$", re.I)
 FORBIDDEN_PARTS = {".git", STATE, "orig", "build", "asm", "expected", "tools", "config", ".github", "assets", "bin"}
+FORK_BUILD_SLOTS = min(4, COMPILER_SLOTS)
+
+
+def _bounded_build(cmd: list[str]) -> tuple[list[str], int]:
+    """Reserve the number of jobs Ninja or Make may start in the shared compiler queue."""
+    tool = Path(cmd[0]).stem.lower()
+    if tool not in {"ninja", "ninja-build", "make", "gmake", "mingw32-make"}:
+        # A custom build can launch several compilers without exposing a job-count flag.
+        return cmd, COMPILER_SLOTS
+    end = cmd.index("--") if "--" in cmd else len(cmd)
+    options = cmd[1:end]
+    if "-n" in options or "-t" in options and tool.startswith("ninja"):
+        return cmd, 0
+    requested = FORK_BUILD_SLOTS
+    for index, arg in enumerate(options):
+        if match := re.fullmatch(r"(?:-j|--jobs=)([0-9]+)", arg):
+            requested = int(match[1])
+        elif arg in {"-j", "--jobs"}:
+            following = options[index + 1:index + 2]
+            requested = int(following[0]) if following and following[0].isdigit() else FORK_BUILD_SLOTS
+    slots = min(requested or FORK_BUILD_SLOTS, FORK_BUILD_SLOTS)
+    return [*cmd[:end], f"-j{slots}", *cmd[end:]], slots
 
 
 def _sha1(path: Path) -> str:
@@ -572,6 +596,13 @@ class ForkProject:
 
     def _execute(self, cmd: list[str], log, timeout: float, failed: list[str] | None,
                  platform: str | None = None) -> tuple[int | None, list[str], str]:
+        """A fork's build shares compiler capacity with ROM judges and other forks."""
+        cmd, slots = _bounded_build(cmd)
+        with compiler_slots(slots) if slots else nullcontext():
+            return self._execute_admitted(cmd, log, timeout, failed, platform)
+
+    def _execute_admitted(self, cmd: list[str], log, timeout: float, failed: list[str] | None,
+                          platform: str | None = None) -> tuple[int | None, list[str], str]:
         """Run a build step: (its exit code, None when it couldn't start or ran out of time; every line it printed,
         or why it didn't run; what buildhelp.explain makes of a failure, or ""). `platform`: as in run. The time
         limit holds while the step still prints, or hangs with its output open, and stops it with everything it

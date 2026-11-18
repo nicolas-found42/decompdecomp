@@ -13,7 +13,7 @@ git -C ish fetch -q --depth=1 https://github.com/ish-app/ish.git ce96e698f1820b9
 git -C ish checkout -q --detach FETCH_HEAD
 git -C ish submodule update --init --recursive --depth 1
 export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"
-CC="$(brew --prefix llvm)/bin/clang" uvx --from meson==1.12.1 meson setup ish/build ish
+CC="$(brew --prefix llvm)/bin/clang" uvx --from meson==1.12.1 meson setup --buildtype=release ish/build ish
 ninja -C ish/build ish
 curl -fsSLo libc.deb 'https://deb.debian.org/debian/pool/main/g/glibc/libc6_2.31-13+deb11u11_i386.deb'
 echo '8198abd817cbcd615ce3207fb924317b53cc0b522bfe57d689757de13fe00d66  libc.deb' | shasum -a 256 -c -

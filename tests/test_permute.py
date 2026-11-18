@@ -375,6 +375,46 @@ needs_tool = pytest.mark.skipif(toolchains.installed(permute.TOOL) is None, reas
 
 
 @needs_tool
+def test_decomp_permuter_reads_label_addresses_and_a_computed_goto():
+    source = """int f(int x) {
+        static void *labels[] = { &&done, &&other };
+        goto *labels[x & 1];
+    done:
+        return x + 1;
+    other:
+        return x * 2;
+    }"""
+    gen = permute.Generator()
+    try:
+        variants = gen.batch({"header": "", "source": source, "function": "f", "family": "gcc", "seed": 1, "count": 8})
+    finally:
+        gen.close()
+    assert variants
+    assert all("&&done" in v and "&&other" in v and re.search(r"\bgoto\s*\*", v) for v in variants)
+
+
+def test_gnu_jump_restoration_leaves_logical_and_and_literals_alone():
+    from decompnet.permuter_gen import Restorer
+
+    source = '''int f(int x, int label) {
+        void *target = &&label;
+        const char *text = "return &&label; goto *target;";
+        if (x&&&x) return 0;
+        if (x && label) goto *(x ? target : &&label);
+    label:
+        return x && label;
+    }'''
+    r = Restorer(source)
+    assert "&&label" not in r.source.replace('"return &&label; goto *target;"', '')
+    assert r.source.count("x && label") == 2
+    restored = r.restore(r.source)
+    assert restored.count("&&label") == 3 and restored.count("x && label") == 2
+    assert "x&&&x" in restored
+    assert '"return &&label; goto *target;"' in restored
+    assert re.search(r"goto\s*\*\s*\(+x \? target : \(*&&label", restored)
+
+
+@needs_tool
 def test_decomp_permuter_writes_variants_of_the_function_alone():
     job = {"header": HEADER, "source": SOURCE, "function": "f", "family": "gcc", "seed": 1, "count": 20}
     gen = permute.Generator()

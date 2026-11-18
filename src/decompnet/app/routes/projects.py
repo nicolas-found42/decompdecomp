@@ -36,7 +36,7 @@ def register(app: App) -> None:
                     result = fn(slug, request, data)
                     project = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
                     if (request.method == "POST" and project and not net.project_missing(project)
-                            and request.url.path not in ("/api/compiler/test-default", "/api/compiler/cleanup")):
+                            and request.url.path not in ("/api/compiler/test-default", "/api/compiler/cleanup", "/api/ps2-analysis")):
                         net.progress.sync(slug, force=True)
                     return result
                 return JSONResponse(await call(perform))
@@ -222,6 +222,14 @@ def register(app: App) -> None:
             pass  # not yours (any more): nothing to give back
         return {"ok": True}
 
+    def p_ps2_analysis(slug, request, data):
+        from ...consoles.ps2 import analysis, analysis_tools
+        proj = net.project_row(slug)
+        key = data.get("tool")
+        if key not in analysis_tools.TOOLS:
+            raise ValueError("Unknown PS2 analysis tool.")
+        return {"job": jobs.start(analysis_tools.TOOLS[key][0], lambda log: analysis.run(net, proj, key, data, log))}
+
     def p_verify_assembly(slug, request, data):
         proj = net.project_row(slug)
         verify = net.console(proj).verify_assembly
@@ -361,6 +369,7 @@ def register(app: App) -> None:
         "/api/reimport": (p_reimport, ["POST"]),
         "/api/delete": (p_delete, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]), "/api/reopen": (p_reopen, ["POST"]), "/api/setaside": (p_set_aside, ["POST"]),
+        "/api/ps2-analysis": (p_ps2_analysis, ["POST"]),
         "/api/verify-assembly": (p_verify_assembly, ["POST"]),
         "/api/recheck": (p_recheck, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]), "/api/title": (p_title, ["POST"]),

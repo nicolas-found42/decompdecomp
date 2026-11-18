@@ -71,7 +71,7 @@
     <label><input type="radio" name="platform" value="gc"><span>GameCube</span></label>
     <label><input type="radio" name="platform" value="wii"><span>Wii</span></label>
     <label><input type="radio" name="platform" value="ps1"><span>PlayStation</span></label>
-    <label title="EE-GCC, mixed compiler/assembler profiles and byte-verified PS2SDK routines"><input type="radio" name="platform" value="ps2"><span>PlayStation 2</span></label>
+    <label title="EE-GCC, PS2SDK verification, R5900 decompilation and SDK symbol analysis"><input type="radio" name="platform" value="ps2"><span>PlayStation 2</span></label>
     <label><input type="radio" name="platform" value="ps3"><span>PlayStation 3</span></label>
     <label><input type="radio" name="platform" value="ps4"><span>PlayStation 4</span></label>
     <label><input type="radio" name="platform" value="psp"><span>PSP</span></label>
@@ -127,7 +127,7 @@
       <h3><span class="pl-name">PlayStation 2</span> <span class="status beta">Beta</span></h3>
       <ol class="stations">
         <li><small>Your file</small><b>Disc or ELF</b><span>the game's main program</span></li>
-        <li><small>Split by</small><b>splat</b><span>with spimdisasm</span></li>
+        <li><small>Split by</small><b>splat</b><span>with spimdisasm. Inspect functions with Ghidra Emotion Engine, scan SDK signatures and compare two PS2 executables.</span></li>
         <li><small>Built by</small><b>EE-GCC or CodeWarrior</b><span>EE-GCC 2.9 to 3.2 (Sony builds run with iSH on Apple Silicon or the local Linux runner on Mac), CodeWarrior 2.3.3 / 3.0.1 (also on Mac through wibo with license acceptance); C and C++; address ranges can select mixed compiler/assembler versions, including 991111-01; PS2SDK verification records exact assembly separately; another build from your own copy</span></li>
         <li><small>Judged by</small><b>Linking</b><span>at the function's real address, compared byte for byte</span></li>
         <li><small>You get</small><b>A rebuildable project</b><span>that builds the program again, byte for byte</span></li>

@@ -500,6 +500,17 @@
   <header class="page-head"><p class="eyebrow">Compilers &amp; tools</p><h1>What builds your games</h1>
     <p class="muted">decompdecomp installs what a project needs by itself. Proprietary compilers (IDO, CodeWarrior, Visual C++) are only installed when you accept that.</p></header>
   <div class="chips" id="toolChips"></div>
+  <section class="panel" id="ps2Analysis" hidden>
+    <header class="panel-head"><h2 id="ps2AnalysisTitle">PS2 analysis</h2></header>
+    <div class="pad">
+      <label class="field"><span>Project</span><select id="ps2AnalysisProject"></select></label>
+      <label class="field" id="ps2AddressField"><span>Function address (hex)</span><input class="mono" id="ps2Address" placeholder="0x0102A028"></label>
+      <div id="ps2CompanionField" hidden><label class="field"><span>Comparison ELF</span><input class="mono" id="ps2Companion" placeholder="Project’s analysis-inputs/CORE.elf"></label><button class="ghost small-btn" id="ps2Choose" type="button">Choose ELF…</button></div>
+      <div class="row"><button class="primary" id="ps2Run" type="button">Run analysis</button><button class="ghost" id="ps2Dismiss" type="button">Close results</button></div>
+      <pre class="log" id="ps2AnalysisLog" aria-live="polite"></pre>
+      <h3 id="ps2ResultTitle" hidden></h3><pre id="ps2Result" aria-label="Analysis output" tabindex="0" hidden></pre>
+    </div>
+  </section>
   <div class="tool-grid" id="toolGrid"></div>
 </main>
 

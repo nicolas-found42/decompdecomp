@@ -14,6 +14,8 @@ local Linux runner, SN Systems EE-GCC and CodeWarrior through wibo. Physical Int
 Mac and retail-game verification remain planned; Apple Silicon checks use the
 homemade PS2 demo. Arbitrary imported Make/Ninja builds in the VM remain planned.
 
+The PS2 desktop tool page can decompile an R5900 function, scan SDK signatures, and compare function shapes across two executables. All three were exercised on the Apple Silicon GT4 boot project.
+
 ## What works where
 
 Each feature and the platforms it covers today. A — is a gap: pick one up (the notes under the table say where to

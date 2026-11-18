@@ -17,6 +17,7 @@ from starlette.responses import JSONResponse, Response
 
 from ... import __version__, consoles, hostenv, linuxvm, toolchains
 from ...agents.api import API_PRESETS
+from ...consoles.ps2 import analysis_tools
 from ...forks.project import SCOPES
 from ...network import NetworkError
 from .. import cleanup, edition, picker, saves, updates
@@ -46,7 +47,8 @@ def register(app: App) -> None:
         for t in tcs:
             t["use"] = COMPILERS.get(t["id"]) or TOOLS[t["id"]]
             t["name"] = consoles.compiler_name(t["id"]) if t["id"] in COMPILERS else t["name"]
-        return {"version": __version__, "build": build_id, "install": updates.installed(), "dev": edition.DEV,
+        return {"ps2_tools": analysis_tools.catalog(), "ish_runner": bool(linuxvm.wanted() and linuxvm.ish_runner.runtime()),
+                "version": __version__, "build": build_id, "install": updates.installed(), "dev": edition.DEV,
                 "platform": toolchains.current_platform(), "system": system_name(), "home": hostenv.shown_path(home.parent),
                 "log_file": hostenv.shown_path(home / "logs" / "decomp.log"),
                 "linux_vm": ({"ready": linuxvm.status()[0], "why": linuxvm.status()[1]} if linuxvm.wanted() else None),
@@ -55,6 +57,16 @@ def register(app: App) -> None:
                 "account_usage": manager.account_usage(), "api_presets": API_PRESETS, "settings": settings.public(), "mcp_url": mcp_url,
                 # every console: names, status, compilers, layout, features (consoles/, Console.describe)
                 "consoles": [c.describe() for c in consoles.CONSOLES]}
+
+    @mcp.custom_route("/api/install-ps2-tool", methods=["POST"])
+    async def install_ps2_tool(request: Request) -> Response:
+        if (bad := guard(request, write=True)):
+            return bad
+        key = (await body(request)).get("tool")
+        if key not in analysis_tools.TOOLS:
+            return fail(ValueError("Unknown PS2 analysis tool."))
+        return JSONResponse({"job": jobs.start("Install " + analysis_tools.TOOLS[key][0],
+                                               lambda log: analysis_tools.install(key, log))})
 
     def autopilot(slug: str) -> None:
         """Free matches first, in the background, when the user wants that (the default): a game started from

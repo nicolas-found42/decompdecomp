@@ -252,6 +252,8 @@ Please [report problems](https://github.com/n-delic/decompdecomp/issues). The st
 | PlayStation 4 | Ghidra, or an explicit function map selected with the decrypted executable. Strict objdiff projects; encrypted SELF/PKG, PRX modules and full-game relinking remain planned. |
 | Windows PC | [Ghidra](https://github.com/NationalSecurityAgency/ghidra). decompdecomp cuts each function out of the .exe and the game's own DLLs into a project for Visual C++ and objdiff (`consoles/pc/scratch.py`). |
 
+**PS2 analysis.** Open **Compilers & tools → PS2**, open a tool, select a project and click **Run analysis**. Ghidra Emotion Engine shows a pseudocode draft for a hexadecimal function address. The PS2Recomp scanner lists possible SDK symbols in the boot ELF. PS2 symbol transfer compares those project functions with a second PS2 ELF. Choose the comparison file or place it at `analysis-inputs/CORE.elf` inside the project. Both searches report candidates for inspection. They leave names, claims and byte-match records intact. The scanner installer needs a system C++17 compiler. The extension uses the app's pinned Ghidra 12.1.4 and Java 21 or newer.
+
 **C and C++.** GameCube, Wii, PS2 and Windows PC games are often C++. On these platforms, agents can write
 classes and methods, and decompdecomp changes the C++ names back to the names of the game. N64 games use
 C. Public decomps use the language of their project.

@@ -441,10 +441,13 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
                                           str(d.get("message", "")))}
 
     def sdk_libraries(room, member, d):
-        """A guest reads the host's archive evidence and can send names to desktop review."""
+        """A guest's agent reads and reviews the host's archive evidence on the host."""
         from . import tools
 
         agent = room.agent_for(member, d.get("agent"))
+        if "decision" in d:
+            return {"text": tools.call(net, agent, room.slug, "review_sdk_name",
+                                       {key: d.get(key, "") for key in ("candidate", "decision", "reason", "witness")})}
         if "candidate" in d:
             return {"text": tools.call(net, agent, room.slug, "propose_sdk_name", {"candidate": d["candidate"]})}
         return {"text": tools.call(net, agent, room.slug, "ps2_sdk_symbols",
@@ -453,7 +456,30 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
     def split(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
         return {"text": net.split_function(agent, room.slug, str(d.get("function", "")), str(d.get("at", "")),
-                                           str(d.get("new_name", "")))}
+                                           str(d.get("new_name", "")), checked=True)}
+
+    def boundary(room, member, d):
+        from . import tools
+
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": tools.call(net, agent, room.slug, "report_boundary",
+                                   {key: d.get(key, "") for key in ("function", "end", "reason", "tail")})}
+
+    def suggestion(room, member, d):
+        from . import tools
+
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": tools.call(net, agent, room.slug, "suggest",
+                                   {key: d[key] for key in ("text", "compiler", "flags", "function", "ranges", "source")
+                                    if key in d})}
+
+    def compiler_settings(room, member, d):
+        from . import tools
+
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": tools.call(net, agent, room.slug, "apply_compiler_settings",
+                                   {key: d[key] for key in ("function", "compiler", "reason", "flags", "source")
+                                    if key in d})}
 
     def note(room, member, d):
         """A note on a function; one on no function is knowledge for every agent, so it needs two models' agreement
@@ -462,6 +488,13 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         if not d.get("function"):
             return {"text": net.knowledge.share(agent, room.slug, str(d.get("text", "")))}
         return {"text": net.add_note(agent, room.slug, str(d.get("text", "")), d["function"])}
+
+    def knowledge(room, member, d):
+        from . import tools
+
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": tools.call(net, agent, room.slug, "share_knowledge",
+                                   {key: d[key] for key in ("text", "supports", "function", "reference") if key in d})}
 
     def edit(room, member, d):
         """A member's edit of a git project's file (a header, a new or shared source file): made and checked here."""
@@ -521,7 +554,11 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/rename", endpoint(rename), methods=["POST"]),
         Route("/collab/sdk-libraries", endpoint(sdk_libraries), methods=["POST"]),
         Route("/collab/split", endpoint(split), methods=["POST"]),
+        Route("/collab/boundary", endpoint(boundary), methods=["POST"]),
+        Route("/collab/suggestion", endpoint(suggestion), methods=["POST"]),
+        Route("/collab/compiler-settings", endpoint(compiler_settings), methods=["POST"]),
         Route("/collab/note", endpoint(note), methods=["POST"]),
+        Route("/collab/knowledge", endpoint(knowledge), methods=["POST"]),
         Route("/collab/leave", endpoint(leave), methods=["POST"]),
         Route("/collab/edit", endpoint(edit), methods=["POST"]),
         Route("/collab/split_file", endpoint(split_file), methods=["POST"]),

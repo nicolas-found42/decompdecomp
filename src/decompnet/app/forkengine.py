@@ -3383,7 +3383,7 @@ class ForkEngine:
         return {"text": remembered(text, score) + stall, "score": score, "matched": False}
 
     def try_compiler(self, agent: Agent, slug: str, function: str, compiler: str, flags: str = "",
-                     source: str = "") -> str:
+                     source: str = "", *, reason: str = "") -> str:
         """A function's C built with another of its console's compilers, where the project lets each source file have
         its own (Console.file_compiler: a DS game mixes CodeWarrior versions, issue #23). Judged as an attempt that
         isn't kept: a version it matches with stays the file's, committed, and only when the file's other matched
@@ -3398,6 +3398,8 @@ class ForkEngine:
         own = console.file_compiler(fp, unit.source) if unit.source else None
         if own is None:
             raise NetworkError("a fork builds with its project's own compilers")
+        if len(fp.units_for(unit.source)) != 1:
+            raise NetworkError("This source file is built in more than one way. Use a compiler range check so every build is tested.")
         if self.net.links.get(slug) is not None:  # a guest's tree follows the host's: its build is the host's to change
             raise NetworkError("in a room, the host's project decides each file's compiler: try_compiler works there")
         if flags.strip():
@@ -3422,9 +3424,14 @@ class ForkEngine:
         held = self._hold_for_try(slug, function, agent)  # a function nobody holds is held only while it's tried
         try:
             with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), self._unit_lock(proj, unit.name):
+                if console.file_compiler(fp, unit.source) != own:
+                    raise NetworkError("Another check changed this file's compiler. Read the current settings and retry.")
                 try:
                     # what matches with the file's own compiler, measured before it changes: what every try must keep
-                    self._baseline(proj, fp, unit, (fp.root / unit.source).read_text(errors="replace", encoding="utf-8"))
+                    before, _ = self._baseline(proj, fp, unit,
+                                               (fp.root / unit.source).read_text(errors="replace", encoding="utf-8"))
+                    if before is None:
+                        raise NetworkError("The file's current build couldn't be checked. Fix that build before changing its compiler.")
                     for c in wanted:
                         if tried and time.monotonic() > until:
                             break
@@ -3440,6 +3447,9 @@ class ForkEngine:
                             self.net.bump_generation(proj["id"])  # (earlier compiles of the file aren't repeats)
                             self._commit(proj, fp, rel, f"Build {unit.source} with {c}\n\n{fn['name']} matches with "
                                                         f"it (found by {agent.name} with decompdecomp).")
+                            detail = f"{unit.source} now uses {c}. Exact match checked on {fn['name']}."
+                            with self.net.store.tx() as db:
+                                self.net._event(db, proj["id"], agent.id, "compiler", (detail + " " + reason).strip())
                             self.net.filecompilers.tried(slug, unit.source, c)  # (the range checks around it)
                             return f"{c}: {res['text']}\n{unit.source} is built with {c} from now on."
                         if res.get("broken"):  # the file's other functions need its own compiler
@@ -3758,10 +3768,11 @@ class ForkEngine:
     def _vote(self, agent: Agent, proj, fn, kind: str, key: str, reason: str, event: str, what: str):
         """An agent's say on a change to the project's functions (`kind`: joins, boundaries; `key`: which change),
         kept in the function's meta; returns everyone's say on it and their models."""
+        model = self.net.knowledge.model_of(agent) if kind == "boundaries" else model_of(agent.name)
         with self.net.store.tx() as db:
             meta = json.loads(db.execute("SELECT meta FROM functions WHERE id=?", (fn["id"],)).fetchone()["meta"] or "{}")
             said = meta.setdefault(kind, {}).setdefault(key, {})
-            said[agent.name] = {"model": model_of(agent.name), "why": reason.strip()[:2000], "t": time.time()}
+            said[agent.name] = {"model": model, "why": reason.strip()[:2000], "t": time.time()}
             db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
             self.net._event(db, proj["id"], agent.id, event, f"{what}: {reason.strip()[:200]}")
         return said, {v["model"] for v in said.values()}
@@ -3770,9 +3781,8 @@ class ForkEngine:
         """An agent says a function runs on past its end: into data or leftovers, or into another function the
         analysis merged with it. Once NOT_C_AGENTS agents of NOT_C_MODELS models say it of the same address, the
         console cuts it there (Console.cut_function: the rest a function of its own, set aside when it isn't code),
-        checked as a join is (reanalyse: the game rebuilt byte for byte, else taken back), never a matched function;
-        a cut that doesn't hold is remembered. ROM projects ask the user instead (engine.request_boundary): there the
-        rest is always set aside, and the user sees the words it leaves out; here the rebuild check stands behind it."""
+        checked as a join is (reanalyse: the game rebuilt byte for byte, else taken back), never a matched function.
+        A cut that doesn't hold is remembered. ROM projects check the proposed split and existing matches directly."""
         if not reason.strip():
             raise NetworkError("say what follows the end (data, leftovers, another function) and how you can tell")
         proj, fp, cfg = self.get(slug)
@@ -3803,7 +3813,8 @@ class ForkEngine:
         refused = (cfg.get("boundaries_refused") or {}).get(f"{symbol}@{key}")
         if refused:
             return f"Ending {fn['name']} at {key} was tried, and refused: {refused}. Work on it as it is."
-        said, models = self._vote(agent, proj, fn, "boundaries", key, reason, "boundary", f"{fn['name']} ends at {key}")
+        said, models = self._vote(agent, proj, fn, "boundaries", key, reason, "boundary",
+                                 f"Reported that {fn['name']} ends at {key}")
         if len(said) < NOT_C_AGENTS or len(models) < NOT_C_MODELS:
             return (f"Your report is counted ({len(said)} of {NOT_C_AGENTS} agents, {len(models)} of {NOT_C_MODELS} "
                     f"models): {fn['name']} ends at {key} once enough agree and the game still builds byte for byte. "
@@ -3826,6 +3837,8 @@ class ForkEngine:
             self.net._update_cfg(slug, lambda c: c.setdefault("boundaries_refused", {}).update({f"{symbol}@{key}": why}))
             return f"{len(said)} agents agreed, but ending {fn['name']} at {key} was refused: {why}."
         self.net.joined(fn["name"], slug)  # (its code changed: what set it aside was about the whole)
+        with self.net.store.tx() as db:
+            self.net._event(db, proj["id"], agent.id, "boundary", f"Applied after rebuild check. {done}. {what}")
         try:
             self.net.add_note(self.net.local_agent("decompdecomp")[0], slug,
                               f"Agents ({', '.join(sorted(said))}) found it ran on past its end, and decompdecomp cut "
@@ -4344,7 +4357,7 @@ class ForkEngine:
                            "check": "confirmed", "said": f"{p['file']}: its matched functions match with it"}
                           for p in parts]}
 
-    def set_compiler_ranges(self, slug: str, ranges: list[list[int]], compiler: str | None) -> str:
+    def set_compiler_ranges(self, slug: str, ranges: list[list[int]], compiler: str | None, *, exact_only=False) -> str:
         """The Settings panel's "only for these address ranges", where each source file has a compiler: the files
         whose code is in them get `compiler` (None: the project's own again), each only when its matches hold."""
         _, fp, cfg = self.get(slug)
@@ -4359,7 +4372,7 @@ class ForkEngine:
         done, stayed = [], []
         for f in files:
             try:
-                self.set_file_compiler_by_hand(slug, f, compiler or own)
+                self.set_file_compiler_by_hand(slug, f, compiler or own, exact_only=exact_only)
                 done.append(f)
             except NetworkError as e:
                 stayed.append(str(e))
@@ -4405,8 +4418,10 @@ class ForkEngine:
         units = fp.units_for(source)
         if own is None or not units:
             raise NetworkError(f"{source} isn't a source file whose compiler this project lets you choose")
-        text = (fp.root / source).read_text(errors="replace", encoding="utf-8")
         with self._tree(proj).exclusive(), self._units_locked(proj, [u.name for u in units]):
+            if console.file_compiler(fp, source) != own:
+                raise NetworkError("Another check changed this file's compiler. Read the current settings and retry.")
+            text = (fp.root / source).read_text(errors="replace", encoding="utf-8")
             before: dict[str, float] = {}
             for u in units:
                 before.update(self._baseline(proj, fp, u, text)[0] or {})
@@ -4429,7 +4444,7 @@ class ForkEngine:
                     self._build_unit(proj, fp, u)  # the file's objects are its own compiler's again
         return before, after
 
-    def set_file_compiler_by_hand(self, slug: str, source: str, compiler: str) -> None:
+    def set_file_compiler_by_hand(self, slug: str, source: str, compiler: str, *, exact_only=False) -> None:
         """The user's choice of a source file's compiler (the project's Settings), kept only when every function of
         the file that matched still matches with it: the rule try_compiler's switches follow. What matches with it
         now is a match like any other."""
@@ -4443,9 +4458,13 @@ class ForkEngine:
             raise NetworkError(f"{compiler!r} isn't one of this project's compilers")
         if compiler == own:
             return
-        text = (fp.root / source).read_text(errors="replace", encoding="utf-8")
         with self._tree(proj).exclusive(), self._units_locked(proj, [u.name for u in units]):
-            before = {u.name: self._baseline(proj, fp, u, text)[0] or {} for u in units}
+            if console.file_compiler(fp, source) != own:
+                raise NetworkError("Another check changed this file's compiler. Read the current settings and retry.")
+            text = (fp.root / source).read_text(errors="replace", encoding="utf-8")
+            before = {u.name: self._baseline(proj, fp, u, text)[0] for u in units}
+            if exact_only and any(scores is None for scores in before.values()):
+                raise NetworkError(f"{source} stays with {own}: the current build couldn't be checked.")
             with self._build_locks[proj["id"]]:
                 rel = console.set_file_compiler(fp, source, compiler)
             after, broken = {}, []
@@ -4455,17 +4474,20 @@ class ForkEngine:
                     after[u.name] = fp.diff(u, None).unit_scores if ok else {}
                 except (ObjdiffError, ForkError):
                     after[u.name] = {}
-                broken += [n for n, pct in before[u.name].items()
+                broken += [n for n, pct in (before[u.name] or {}).items()
                            if (pct or 0) >= 100 and (after[u.name].get(n) or 0) < 100]
-            if broken or not all(after.values()):
+            exact = any((percent or 0) >= 100 for scores in after.values() for percent in scores.values())
+            if broken or not all(after.values()) or (exact_only and not exact):
                 with self._build_locks[proj["id"]]:
                     console.set_file_compiler(fp, source, own)
                 for u in units:
                     self._build_unit(proj, fp, u)
                 why = (f"{', '.join(sorted(broken)[:8])} no longer match with it" if broken
-                       else f"the file doesn't build with it:\n{_tail(log)}")
+                       else f"the file doesn't build with it:\n{_tail(log)}" if not all(after.values())
+                       else "the compiler produced no exact match in this file")
                 raise NetworkError(f"{source} stays with {own}: {why}")
-            self._commit(proj, fp, rel, f"Build {source} with {compiler}\n\nChosen in decompdecomp's project settings.")
+            reason = "Verified with an exact match." if exact_only else "Chosen in decompdecomp's project settings."
+            self._commit(proj, fp, rel, f"Build {source} with {compiler}\n\n{reason}")
             self.net.bump_generation(proj["id"])  # (the file's compiler: earlier compiles aren't repeats any more)
             for u in units:
                 self._keep_scores(proj, u, text, after[u.name])

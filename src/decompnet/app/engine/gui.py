@@ -18,7 +18,9 @@ from .. import saves
 
 # What the notification centre tells: news a person wants to hear about, not every claim and attempt agents make.
 NOTIFY_KINDS = ("match", "link", "autopilot", "compiler", "reopen", "not_c", "knowledge", "collab", "import", "reimport", "files",
-                "paused", "stopped")
+                "paused", "stopped", "needs-setup", "sdk-review", "boundary")
+DECISION_KINDS = ("sdk-review", "compiler", "boundary", "knowledge")
+RECENT_DECISIONS = 12
 EVENTS_PER_ASK = 200  # events the notification centre gets per ask (it asks again for more)
 # what the project's page gets on each poll (about once a second): the newest since its last ask, at most
 LIVE_EVENTS, LIVE_ATTEMPTS = 60, 80
@@ -378,6 +380,12 @@ class GuiMixin:
     def recent_events(self, limit: int = EVENTS_PER_ASK) -> list[dict]:
         """The notification centre's history: the latest notable events of every project, newest first."""
         return [dict(r) for r in self.store.all(f"{EVENT_ROWS} ORDER BY e.id DESC LIMIT ?", limit)]
+
+    def decision_history(self, slug: str) -> list[dict]:
+        """Recent decisions for the Agents view, fetched with the findings outside the map's live poll."""
+        return [dict(row) for row in self.store.all(
+            f"{EVENT_ROWS} AND p.slug=? AND e.kind IN ({','.join('?' for _ in DECISION_KINDS)}) "
+            "ORDER BY e.id DESC LIMIT ?", slug, *DECISION_KINDS, RECENT_DECISIONS)]
 
     def record_event(self, slug: str, kind: str, detail: str, agent_name: str = "") -> None:
         """Something that happened outside the judge (a helper paused on an error), in the project's feed and the

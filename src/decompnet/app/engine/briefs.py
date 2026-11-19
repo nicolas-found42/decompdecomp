@@ -436,6 +436,13 @@ class BriefMixin:
             lines += section(fn, proj)
         if lookup := self.console(proj).library_lookup:
             lines += lookup.brief(self, proj, fn)
+        reports = [item for item in self.cfg(proj).get("boundaries", [])
+                   if item["status"] == "open" and item.get("function_id", fn["id"]) == fn["id"]
+                   and item["function"] == fn["name"]]
+        if reports:
+            lines += ["", "### Reported function ends", "Use report_boundary only if your own evidence supports the cut."]
+            lines.extend(f"- 0x{item['end']:X} ({item.get('tail') or 'unknown'} after it): {item['reason']}"
+                         for item in reports[-5:])
         twin = self._twin_lines(proj, fn) if fn["status"] != "matched" else []
         lines += twin
         alike = [] if twin else [(r, sim) for r, sim in self.similar(proj, fn, top=3) if r["status"] == "matched"]

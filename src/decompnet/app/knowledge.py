@@ -4,10 +4,8 @@ Agents used to leave project-wide notes that every new session read as "what age
 wrote reached all the others, its guesses too ("it's this compiler", then "no, it's this one"). Now an agent proposes
 (share_knowledge), and a proposal counts only when helpers running two different models back it on their own: two
 Claude Opus sessions agreeing are one opinion; Claude Opus and GPT agreeing are two. That's also why running
-helpers of several models pays: they check each other. An agreed proposal reaches every agent's prompt once the
-user accepts it, or at once when the project adds agreed knowledge by itself (its setting). The user can also be
-the second opinion and accept a proposal one model backs: on an x86 game worked by one model only, 55 proposals
-waited for a second model that never came, and every session found the same things out again.
+helpers of several models pays: they check each other. An agreed proposal reaches every agent's prompt.
+References the app can check against the project can be shared as verified findings directly.
 
 Compiler questions don't belong here: which compiler built what is settled by the compiler map and range checks,
 with evidence, not by agents agreeing.
@@ -75,31 +73,33 @@ class Knowledge:
         with net.store.tx() as db:
             for sql in SCHEMA:
                 db.execute(sql)
+            # Older releases used this status only after two models agreed.
+            db.execute("UPDATE knowledge SET status=? WHERE status=?", (ACCEPTED, AGREED))
 
-    def _model_of(self, agent: Agent) -> str:
+    def model_of(self, agent: Agent) -> str:
         """The model behind a helper (its record), or its own name when the app doesn't know one."""
         row = self.net.store.one("SELECT model FROM helpers WHERE name=? AND model != '' ORDER BY id DESC LIMIT 1",
                                  agent.name) if self._has_helpers() else None
         # without a record: the helper's name less its number (claude-opus-5.5-1 and -2 are one model)
-        return model_key(row["model"] if row else re.sub(r"-\d+$", "", agent.name))
+        name = row["model"] if row else re.sub(r"-\d+$", "", agent.name)
+        # A second token or room label alone provides no evidence that a different model checked the finding.
+        if not row:
+            origin = self.net.store.one("SELECT origin FROM agents WHERE id=?", agent.id)
+            if agent.name.startswith("manual-") or (origin and (origin["origin"] or "").startswith("collab:")):
+                return "external MCP"
+        return model_key(name)
 
     def _has_helpers(self) -> bool:
         return self.net.store.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='helpers'") is not None
 
-    def auto(self, proj) -> bool:
-        return bool(self.net.cfg(proj).get("knowledge_auto"))
-
-    def set_auto(self, slug: str, on: bool) -> None:
-        self.net._update_cfg(slug, lambda cfg: cfg.__setitem__("knowledge_auto", bool(on)))
-        if on:
-            proj = self.net._project(slug)
-            with self.net.store.tx() as db:
-                db.execute("UPDATE knowledge SET status=?, decided_at=? WHERE project_id=? AND status=?",
-                           (ACCEPTED, time.time(), proj["id"], AGREED))
-
-    def share(self, agent: Agent, slug: str, text: str = "", supports: int = 0) -> str:
-        """An agent proposes something every agent on this game should know, or backs a proposal (supports=id)."""
+    def share(self, agent: Agent, slug: str, text: str = "", supports: int = 0, function: str = "",
+              reference: str = "") -> str:
+        """Share a verified reference, propose guidance, or confirm guidance found by another model."""
         proj = self.net._project(slug)
+        if function or reference:
+            if not function or not reference or text or supports:
+                raise NetworkError("Give just function and reference to share a reference checked by the app.")
+            return self._share_reference(agent, proj, function, reference)
         if supports:
             return self._support(agent, proj, int(supports))
         text = " ".join(text.split())[:MAX_TEXT]
@@ -118,40 +118,60 @@ class Knowledge:
             kid = db.execute("INSERT INTO knowledge(project_id, text, status, created_at) VALUES(?,?,?,?)",
                              (proj["id"], text, PROPOSED, time.time())).lastrowid
         self._support(agent, proj, kid)
-        return (f"Proposed as #{kid}. It reaches every agent once a helper running another model backs it "
-                f"(and the user accepts it, unless the project adds agreed knowledge by itself), or once the user "
-                f"gives it to agents.")
+        return f"Proposed as #{kid}. It reaches every agent once a helper running another model confirms it."
+
+    def _share_reference(self, agent: Agent, proj, function: str, reference: str) -> str:
+        """Generate the finding from recorded references so only the checked fact is shared."""
+        from json import loads
+
+        if not self.net.is_rom(proj):
+            raise NetworkError("Propose text for another helper to confirm. Direct reference checks need a ROM project.")
+        fn = self.net._function(function, proj["slug"])
+        symbols = self.net.symbols(proj["id"])
+        address = symbols.resolve(reference)
+        if address is None and re.fullmatch(r"0x[0-9a-f]+", reference, re.I):
+            address = int(reference, 16)
+        if not any(ref[2] == address for ref in loads(fn["relocs"] or "[]")):
+            raise NetworkError("The project found no reference from that function to the given name or address.")
+        text = f"{fn['name']} references {symbols.label(address)} at 0x{address:08X}."
+        model = self.model_of(agent)
+        with self.net.store.tx() as db:
+            fresh = db.execute("SELECT name,relocs FROM functions WHERE id=?", (fn["id"],)).fetchone()
+            if not fresh or fresh["name"] != fn["name"] or fresh["relocs"] != fn["relocs"]:
+                raise NetworkError("The function changed during the check. Read it again and retry.")
+            existing = db.execute("SELECT id FROM knowledge WHERE project_id=? AND text=? AND status=?",
+                                  (proj["id"], text, ACCEPTED)).fetchone()
+            if existing:
+                return f"Verified reference #{existing['id']} is already shared."
+            now = time.time()
+            kid = db.execute("INSERT INTO knowledge(project_id,text,status,created_at,decided_at) VALUES(?,?,?,?,?)",
+                             (proj["id"], text, ACCEPTED, now, now)).lastrowid
+            db.execute("INSERT INTO knowledge_support(knowledge_id,agent_id,model,created_at) VALUES(?,?,?,?)",
+                       (kid, agent.id, model, now))
+            self.net._event(db, proj["id"], agent.id, "knowledge", f"Verified and shared #{kid}: {text}")
+        return f"Verified and shared #{kid}: {text}"
 
     def _support(self, agent: Agent, proj, kid: int) -> str:
-        row = self.net.store.one("SELECT * FROM knowledge WHERE id=? AND project_id=?", kid, proj["id"])
-        if row is None:
-            raise NetworkError(f"no proposal #{kid} on this project")
-        model = self._model_of(agent)
+        model = self.model_of(agent)
         with self.net.store.tx() as db:
+            row = db.execute("SELECT * FROM knowledge WHERE id=? AND project_id=?", (kid, proj["id"])).fetchone()
+            if row is None:
+                raise NetworkError(f"no proposal #{kid} on this project")
+            if row["status"] != PROPOSED:
+                return f"#{kid} is {row['status']} already."
             db.execute("INSERT OR IGNORE INTO knowledge_support(knowledge_id, agent_id, model, created_at) VALUES(?,?,?,?)",
                        (kid, agent.id, model, time.time()))
             models = {r["model"] for r in db.execute("SELECT model FROM knowledge_support WHERE knowledge_id=?", (kid,))}
-            if row["status"] == PROPOSED and len(models) >= MODELS_TO_AGREE:
-                status = ACCEPTED if self.auto(proj) else AGREED
-                db.execute("UPDATE knowledge SET status=?, decided_at=? WHERE id=?", (status, time.time(), kid))
-                self.net._event(db, proj["id"], agent.id, "knowledge", f"#{kid} agreed by {len(models)} models")
-                return (f"#{kid} is agreed by {len(models)} different models"
-                        + (": every agent gets it from now on." if status == ACCEPTED else ": the user decides now."))
-        if row["status"] != PROPOSED:
-            return f"#{kid} is {row['status']} already."
+            if len(models) >= MODELS_TO_AGREE:
+                db.execute("UPDATE knowledge SET status=?, decided_at=? WHERE id=?", (ACCEPTED, time.time(), kid))
+                self.net._event(db, proj["id"], agent.id, "knowledge",
+                                f"Shared #{kid} after {len(models)} models confirmed: {row['text']}")
+                return f"#{kid} is agreed by {len(models)} different models: every agent gets it from now on."
         return f"Backed #{kid}. It still needs a helper running a model other than {model}."
 
     def _open(self, proj) -> list:
         return self.net.store.all("SELECT * FROM knowledge WHERE project_id=? AND status=? ORDER BY id DESC",
                                   proj["id"], PROPOSED)
-
-    def decide(self, slug: str, kid: int, accept: bool) -> None:
-        """The user accepts a proposal (agreed by two models, or one model's that the user vouches for), or rejects
-        (or takes back) one."""
-        proj = self.net._project(slug)
-        with self.net.store.tx() as db:
-            db.execute("UPDATE knowledge SET status=?, decided_at=? WHERE id=? AND project_id=?",
-                       (ACCEPTED if accept else REJECTED, time.time(), int(kid), proj["id"]))
 
     def forget(self, slug: str) -> None:
         """A deleted project's knowledge goes with it (its id may be a new project's later)."""
@@ -162,7 +182,7 @@ class Knowledge:
             db.execute("DELETE FROM knowledge WHERE project_id=?", (pid,))
 
     def listing(self, slug: str) -> dict:
-        """For the GUI: every proposal not rejected, with the models behind it, and the project's setting."""
+        """Show each active finding and the helpers that checked it."""
         proj = self.net._project(slug)
         rows = self.net.store.all("SELECT * FROM knowledge WHERE project_id=? AND status != ? ORDER BY id DESC",
                                   proj["id"], REJECTED)
@@ -170,7 +190,7 @@ class Knowledge:
         for r in self.net.store.all("SELECT s.knowledge_id, s.model FROM knowledge_support s JOIN knowledge k "
                                     "ON k.id=s.knowledge_id WHERE k.project_id=?", proj["id"]):
             support.setdefault(r["knowledge_id"], set()).add(r["model"])
-        return {"auto": self.auto(proj), "models_to_agree": MODELS_TO_AGREE,
+        return {"models_to_agree": MODELS_TO_AGREE,
                 "items": [{"id": r["id"], "text": r["text"], "status": r["status"], "t": r["created_at"],
                            "models": sorted(support.get(r["id"], ()))} for r in rows]}
 
@@ -184,7 +204,7 @@ class Knowledge:
                 break
             out.append(f"- {r['text']}")
             used += len(r["text"])
-        text = ("What agents learned about this game (agreed by different models, or checked by the user):\n"
+        text = ("What agents learned about this game (agreed by different models, or checked by the app):\n"
                 + "\n".join(out)) if out else ""
         open_ = self._open(proj)[:OPEN_SHOWN]
         if open_:

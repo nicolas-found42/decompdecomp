@@ -39,14 +39,14 @@ assert.doesNotMatch(elements.get('compilerParts').innerHTML, /Compare all matche
 assert.doesNotMatch(elements.get('compilerParts').innerHTML, /Test this profile as default/);
 
 ctx.S.ov.kind=undefined;ctx.renderCompilerParts({parts});
-assert.match(elements.get('compilerParts').innerHTML, /Replace default with this profile/);
-assert.match(elements.get('compilerParts').innerHTML, /Test all non-matches/);
+assert.doesNotMatch(elements.get('compilerParts').innerHTML, /Replace default with this profile/);
+assert.doesNotMatch(elements.get('compilerParts').innerHTML, /data-unrange|data-revert/);
 const menuHtml = elements.get('compilerParts').innerHTML;
-assert.match(menuHtml, /aria-label="Build 30 to 40 with the default compiler again"/);
+
 assert.match(menuHtml, /class="agent-menu compiler-profile-menu"/);
 assert.match(menuHtml, /<summary aria-label="Actions for [^"]+ profile"[^>]*>⋮<\/summary>/);
 const menu = menuHtml.match(/<div class="agent-menu-items">(.*?)<\/div>/s)[1];
-assert.equal((menu.match(/<button /g) || []).length, 4);
+assert.equal((menu.match(/<button /g) || []).length, 2);
 assert.doesNotMatch(menu, /class="ghost/);
 assert.doesNotMatch(menuHtml, /Only exact byte matches move/);
 assert.doesNotMatch(menuHtml, /Profile actions<\/span>/);
@@ -59,13 +59,13 @@ vm.runInContext('compilerProfileJobs.clear()', ctx);
 
 // Selecting each option closes the menu and restores focus before opening its workflow.
 const clickStart = steering.indexOf('$("compilerParts").onclick = async (e) => {');
-const clickEnd = steering.indexOf('  const b = e.target.closest("button[data-unrange]");', clickStart);
+const clickEnd = steering.indexOf('\n};', clickStart);
 vm.runInContext(steering.slice(clickStart, clickEnd) + '};', ctx);
 const routed = [];
-ctx.testProfileAsDefault = async (button, action) => routed.push(action);
+ctx.testProfileAsDefault = async () => routed.push('test');
 ctx.compareProfileWithDefault = async () => routed.push('compare');
 (async () => {
-  for (const action of ['compare', 'test', 'replace', 'nonmatches']) {
+  for (const action of ['compare', 'test']) {
     let focused = false;
     const disclosure = {open:true, querySelector:()=>({focus(){focused=true;}})};
     const button = {dataset:{profileAction:action === 'test' ? undefined : action}, closest:()=>disclosure};

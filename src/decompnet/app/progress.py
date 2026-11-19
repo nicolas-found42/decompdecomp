@@ -53,7 +53,8 @@ def _config_key(proj, cfg: dict) -> str:
     rom = cfg.get("rom") or {}
     settings = [proj["name"], cfg.get("platform"), rom.get("sha1"), rom.get("file"), cfg.get("compiler"),
                 cfg.get("compiler_ranges") or [], cfg.get("instructions") or "", cfg.get("claim_order") or "",
-                cfg.get("priority") or [], cfg.get("auto_compiler"), bool(cfg.get("knowledge_auto"))]
+                cfg.get("priority") or [], cfg.get("auto_compiler"), bool(cfg.get("knowledge_auto")),
+                cfg.get("sdk_library_reviews")]
     return hashlib.sha1(json.dumps(settings, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 

@@ -20,6 +20,7 @@ REVIEWS_KEY = "sdk_library_reviews"
 KIT = "ps2-libraries"
 MAX_INDEXES = 6
 REFRESH_SECONDS = 15
+REASON_CHARS = 1000
 IDENT = re.compile(r"[A-Za-z_]\w*\Z", re.ASCII)
 _indexes = OrderedDict()
 _index_lock = threading.Lock()
@@ -148,6 +149,8 @@ def scan(net, proj, log=print) -> dict:
             continue
         target = (row["vram"], row["rom_offset"], hashlib.sha256(code).hexdigest())
         # The SDK fingerprint can change because of another archive. Review follows the matching archive member.
+        # Per-reference details support a review in this scan. Keep the existing IDs and saved receipts.
+        references = [item.pop("references") for item in evidence]
         proofs = [_digest({k: v for k, v in item.items() if k != "sdk"}) for item in evidence]
         scope = _digest([target, relocs, sorted(proofs)])
         for item, proof in zip(evidence, proofs, strict=True):
@@ -156,7 +159,8 @@ def scan(net, proj, log=print) -> dict:
                             and row["name"].startswith(f"func_{row['vram']:08X}")
                             and symbols.resolve(item["name"]) in (None, row["vram"]))
         hits.append({"function_id": row["id"], "function": row["name"], "address": row["vram"],
-                     "rom_offset": row["rom_offset"], "target_hash": target[2], "evidence": evidence})
+                     "rom_offset": row["rom_offset"], "target_hash": target[2], "relocs": relocs, "evidence": evidence,
+                     "references": {item["id"]: refs for item, refs in zip(evidence, references, strict=True)}})
     occurrences = Counter(name for hit in hits for name in {item["name"] for item in hit["evidence"]})
     for hit in hits:
         for item in hit["evidence"]:
@@ -181,7 +185,8 @@ def brief(net, proj, fn) -> list[str]:
     names = ", ".join(dict.fromkeys(item["name"] for item in hit["evidence"][:5] if item["id"] not in dismissed))
     if not names:
         return []
-    return ["", "### SDK library candidates", f"{names}. Call ps2_sdk_symbols for the archive and relocation evidence."]
+    return ["", "### SDK library candidates",
+            f"{names}. Use ps2_sdk_symbols to inspect the evidence and review_sdk_name to record a decision."]
 
 
 def reviews(net, proj) -> dict:
@@ -189,13 +194,24 @@ def reviews(net, proj) -> dict:
 
 
 def listing(net, proj) -> dict:
-    """Desktop settings and review list. Archived approvals remain visible on a restored project."""
+    """Show a scan summary and retained decisions without sending the candidate queue to the desktop."""
     selected = net.cfg(proj).get(SETTINGS_KEY) or []
     cached = _reports(net).get(proj["id"])
     report = cached[1] if cached and cached[1]["selected"] == selected else None
     available = choices()
     active_ids = {choice["id"] for choice in available}
-    return {"choices": available, "selected": selected, "report": report, "reviews": reviews(net, proj),
+    decisions = reviews(net, proj)
+    if report is not None:
+        pending = sum(item["id"] not in decisions or decisions[item["id"]]["decision"] == "proposed"
+                      for hit in report["hits"] for item in hit["evidence"] if item["name"] != hit["function"])
+        report = {key: report[key] for key in ("archives", "functions")} | {"pending": pending}
+    saved = save_reviews(net.cfg(proj))
+    names = {(row["vram"], row["rom_offset"], row["name"]) for row in net.store.all(
+        "SELECT vram,rom_offset,name FROM functions WHERE project_id=?", proj["id"])} if saved else set()
+    display = {key: review | {"active": (review["decision"] == "approved"
+               and (review["address"], review["rom_offset"], review["evidence"]["name"]) in names)}
+               for key, review in saved.items()}
+    return {"choices": available, "selected": selected, "report": report, "reviews": display,
             "missing": sum(key not in active_ids for key in selected)}
 
 
@@ -230,6 +246,10 @@ def restore_reviews(net, proj, records) -> None:
         accepted[key] = {"decision": record["decision"], "address": address, "rom_offset": offset, "target_hash": digest,
                          "by": str(record.get("by") or "")[:255], "original_name": str(record.get("original_name") or "")[:255],
                          "evidence": {field: evidence[field] for field in allowed}}
+        accepted[key].update(_decision_details(record))
+        if isinstance(record.get("history"), list):
+            accepted[key]["history"] = [_history_item(previous) for previous in record["history"]
+                                        if isinstance(previous, dict)]
     if accepted:
         net._update_cfg(proj["slug"], lambda cfg: cfg.setdefault(REVIEWS_KEY, {}).update(accepted))
 
@@ -242,15 +262,21 @@ def render(report: dict, function_id: int | None, decisions: dict | None = None)
     for hit in report["hits"]:
         if function_id is not None and hit["function_id"] != function_id:
             continue
-        visible = [item for item in hit["evidence"] if (decisions or {}).get(item["id"], {}).get("decision") != "dismissed"]
+        visible = [item for item in hit["evidence"]
+                   if function_id is not None or (decisions or {}).get(item["id"], {}).get("decision") != "dismissed"]
         if not visible:
             continue
         out.append(f"0x{hit['address']:08X} {hit['function']}")
         for item in visible:
-            status = "eligible for bulk review" if item["bulk"] else "individual review"
+            status = (decisions or {}).get(item["id"], {}).get("decision")
+            status = status or ("archive evidence supports applying" if item["bulk"] else "needs corroboration")
             out.append(f"  {item['name']} from {item['archive']}({item['member']}) [SDK {item['sdk'][:12]}]. "
                        f"{item['extent']} bytes, {item['resolved_relocations']}/{item['relocations']} relocations "
                        f"confirmed, {status}. Candidate {item['id']}.")
+            if function_id is not None and not item["bulk"]:
+                for name, address, known in list(dict.fromkeys(hit["references"][item["id"]]))[:5]:
+                    state = "confirmed" if known else "archive name only"
+                    out.append(f"    {name} at 0x{address:08X} ({state})")
     if len(out) == 1:
         out.append("No local library candidate.")
     return "\n".join(out)
@@ -266,33 +292,50 @@ def _picked(report: dict, ids: list) -> list[tuple[dict, dict]]:
     return picked
 
 
-def _record(db, proj, picked, decision: str, owner: str = "") -> None:
+def _decision_details(record: dict) -> dict:
+    return {field: value for field, kind in (("reason", str), ("witness", int), ("decided_at", float))
+            if type(value := record.get(field)) is kind}
+
+
+def _history_item(record: dict) -> dict:
+    return {field: str(record.get(field) or "")[:255] for field in ("decision", "by", "original_name")} | _decision_details(record)
+
+
+def _record(db, proj, picked, decision: str, author: str = "", *, reason="", witness=None) -> None:
     config = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
     saved = config.setdefault(REVIEWS_KEY, {})
     for hit, item in picked:
-        saved[item["id"]] = {"decision": decision, "by": owner, "original_name": hit["function"],
-                             "address": hit["address"], "rom_offset": hit["rom_offset"],
-                             "target_hash": hit["target_hash"], "evidence": item}
+        previous = saved.get(item["id"], {})
+        entry = {"decision": decision, "by": author, "original_name": hit["function"],
+                 "address": hit["address"], "rom_offset": hit["rom_offset"],
+                 "target_hash": hit["target_hash"], "evidence": item}
+        if decision != "proposed":
+            entry.update(reason=reason, decided_at=time.time())
+            if witness is not None:
+                entry["witness"] = witness
+            if previous.get("decision") in ("approved", "dismissed"):
+                entry["history"] = [*previous.get("history", []), _history_item(previous)]
+        saved[item["id"]] = entry
     db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(config), proj["id"]))
 
 
 def propose(net, proj, agent, candidate: str) -> str:
-    """Queue a candidate in the owner's review list, without changing function names."""
+    """Leave a lead other agents can corroborate using the same archive evidence."""
     picked = _picked(scan(net, proj, log=lambda _: None), [candidate])
     hit, item = picked[0]
     previous = reviews(net, proj).get(candidate, {}).get("decision")
     if previous in {"approved", "dismissed"}:
-        return f"The owner already {previous} this candidate."
+        return f"An agent already {previous} this candidate. Use review_sdk_name to record new evidence."
     with net.store.tx() as db:
         current = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
         if (current.get(REVIEWS_KEY) or {}).get(candidate, {}).get("decision") in {"approved", "dismissed"}:
-            return "The owner already reviewed this candidate."
+            return "Another agent already reviewed this candidate."
         _record(db, proj, picked, "proposed", agent.name)
-    return f"Proposed {item['name']} for {hit['function']}. The project owner can review the archive evidence."
+    return f"Proposed {item['name']} for {hit['function']}. Use review_sdk_name when you can support a decision."
 
 
 def guard_rename(net, proj, agent, old: str, new: str) -> str | None:
-    """An SDK candidate goes through owner review even when a helper calls the ordinary rename tool."""
+    """An SDK candidate needs a review receipt even through the ordinary rename tool."""
     if not net.cfg(proj).get(SETTINGS_KEY):
         return None
     report = scan(net, proj, log=lambda _: None)
@@ -307,44 +350,98 @@ def guard_rename(net, proj, agent, old: str, new: str) -> str | None:
     return propose(net, proj, agent, candidate["id"]) if candidate else None
 
 
-def decide(net, proj, agent, ids: list, approve: bool, log=print) -> dict:
+def _witness(net, proj, report, hit: dict, item: dict, value: str) -> int:
+    try:
+        address = int(value, 16)
+    except (ValueError, TypeError):
+        raise NetworkError("Give the hexadecimal start address of a caller, jump target, or referenced symbol.") from None
+    if address != hit["address"]:
+        supported = [candidate for candidate in hit["evidence"] if candidate["layout_agrees"]
+                     and any(dest == address and known for _, dest, known in hit["references"][candidate["id"]])]
+        if item in supported and all(candidate["name"] == item["name"] for candidate in supported):
+            return address
+        # A known caller's archive names its callee even before the game has a name for that address.
+        caller = next((c for c in report["hits"] if c["address"] == address), None)
+        if caller and all(c["layout_agrees"] and c["name"] == caller["function"] for c in caller["evidence"]):
+            rows = net.store.all("SELECT id,name,vram,relocs,target FROM functions WHERE project_id=? AND vram IN (?,?)",
+                                 proj["id"], address, hit["address"])
+            current = next((row for row in rows if row["id"] == caller["function_id"]), None)
+            if (len(rows) == 2 and current and current["name"] == caller["function"]
+                    and hashlib.sha256(current["target"] or b"").hexdigest() == caller["target_hash"]
+                    and json.loads(current["relocs"] or "[]") == caller["relocs"]
+                    and all({name for name, dest, _ in caller["references"][c["id"]] if dest == hit["address"]}
+                            == {item["name"]} for c in caller["evidence"])):
+                return address
+    raise NetworkError("The project has no verified reference at that address that distinguishes this SDK name. "
+                       "Check the archive names of a callee or caller, or leave the candidate open.")
+
+
+def review(net, proj, agent, candidate: str, decision: str, reason: str, witness: str = "") -> str:
+    """Let agents act on archive evidence or document corroboration tied to a real reference."""
+    if decision not in ("apply", "dismiss"):
+        raise NetworkError("Choose apply or dismiss for the SDK candidate.")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > REASON_CHARS:
+        raise NetworkError(f"Explain the SDK decision in 1 to {REASON_CHARS} characters.")
+    return decide(net, proj, agent, [candidate], decision == "apply", log=lambda _: None,
+                  reason=reason.strip(), witness=witness)["message"]
+
+
+def decide(net, proj, agent, ids: list, approve: bool, log=print, *, reason="", witness="") -> dict:
     """Apply reviewed names through the same match-preserving rename used by the editor."""
+    symbols = net.symbols(proj["id"])
     report = scan(net, proj, log=log)
     picked = _picked(report, ids)
     decisions = reviews(net, proj)
-    if any(decisions.get(item["id"], {}).get("decision") == "approved" for _, item in picked):
-        raise NetworkError("This SDK name already has an approval receipt.")
-    if not approve:
-        with net.store.tx() as db:
-            _record(db, proj, picked, "dismissed", agent.name)
-        return {"message": f"Dismissed {len(picked)} SDK library candidates."}
-    if len(picked) > 1 and not all(item["bulk"] for _, item in picked):
+    if any(hit["function"] == item["name"] and decisions.get(item["id"], {}).get("decision") == "approved"
+           for hit, item in picked):
+        if approve:
+            return {"message": "This SDK name is already applied."}
+        raise NetworkError("Apply a better supported name before dismissing the current SDK name.")
+    evidence_address = None
+    if reason:
+        (hit, item), = picked
+        if witness:
+            evidence_address = _witness(net, proj, report, hit, item, witness)
+        if approve and not item["bulk"] and evidence_address is None:
+            raise NetworkError("Give a confirmed caller, jump target, or referenced symbol and explain how it supports this name.")
+    if approve and len(picked) > 1 and not all(item["bulk"] for _, item in picked):
         raise NetworkError("Review candidates with ambiguous or incomplete evidence one at a time.")
-    if any(not IDENT.fullmatch(item["name"]) for _, item in picked):
+    if approve and any(not IDENT.fullmatch(item["name"]) for _, item in picked):
         raise NetworkError("An SDK candidate name must be a C identifier before it can name a function.")
-    pairs = [(hit["function"], item["name"]) for hit, item in picked if hit["function"] != item["name"]]
+    pairs = [(hit["function"], item["name"]) for hit, item in picked if approve and hit["function"] != item["name"]]
     if len({new for _, new in pairs}) != len(pairs):
         raise NetworkError("Two candidates would create the same name. Review them individually.")
 
     def record(db):
         getattr(log, "check_cancel", lambda: None)()
         config = db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()
-        if not config or json.loads(config["config"]).get(SETTINGS_KEY) != report["selected"]:
+        current = json.loads(config["config"]) if config else {}
+        if current.get(SETTINGS_KEY) != report["selected"]:
             raise NetworkError("The selected SDKs changed. Review the current scan before approving names.")
+        if net.symbols(proj["id"]) is not symbols or current.get("gp", 0) != net.cfg(proj).get("gp", 0):
+            raise NetworkError("The project symbols changed. Review the current SDK scan before choosing names.")
+        if evidence_address is not None:
+            _witness(net, proj, report, *picked[0], witness)
         for hit, item in picked:
-            row = db.execute("SELECT name,vram,rom_offset,target FROM functions WHERE project_id=? AND id=?",
+            row = db.execute("SELECT name,vram,rom_offset,target,relocs FROM functions WHERE project_id=? AND id=?",
                              (proj["id"], hit["function_id"])).fetchone()
-            if (not row or row["name"] != item["name"] or row["vram"] != hit["address"]
-                    or row["rom_offset"] != hit["rom_offset"]
+            expected_name = item["name"] if approve else hit["function"]
+            if (not row or row["name"] != expected_name or row["vram"] != hit["address"]
+                    or row["rom_offset"] != hit["rom_offset"] or json.loads(row["relocs"] or "[]") != hit["relocs"]
                     or hashlib.sha256(row["target"] or b"").hexdigest() != hit["target_hash"]):
                 raise NetworkError("A reviewed function changed. Run the SDK scan again before approving its name.")
-        _record(db, proj, picked, "approved", agent.name)
+        decision = "approved" if approve else "dismissed"
+        _record(db, proj, picked, decision, agent.name, reason=reason, witness=evidence_address)
+        for hit, item in picked:
+            event = f"{decision.title()} {item['name']} at 0x{hit['address']:08X}"
+            net._event(db, proj["id"], agent.id, "sdk-review", f"{event}. {reason}" if reason else event)
 
     if not pairs:
         with net.store.tx() as db:
             record(db)
-        return {"message": "Saved evidence for the existing names."}
-    result = net.rename_symbols(agent, proj["slug"], pairs, "Approve SDK library names", record=record)
+        return {"message": ("Saved evidence for the existing names." if approve
+                            else f"Dismissed {len(picked)} SDK library candidates.")}
+    result = net.rename_symbols(agent, proj["slug"], pairs, "Apply SDK library names", record=record)
     if result.startswith("❌"):
         raise NetworkError(result)
     return {"message": result}

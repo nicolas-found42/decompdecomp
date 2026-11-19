@@ -2784,7 +2784,7 @@ def _file_compiler_project(tmp_path, monkeypatch, scores: dict[tuple[str, str], 
     monkeypatch.setattr(ForkEngine, "file_scores", lambda self, slug, source, compiler: scores.get(
         (source.removeprefix("src/auto/text_").removesuffix(".cpp"), compiler), ({}, {})))
     switched = []
-    monkeypatch.setattr(ForkEngine, "set_compiler_ranges", lambda self, slug, ranges, compiler: switched.append(
+    monkeypatch.setattr(ForkEngine, "set_compiler_ranges", lambda self, slug, ranges, compiler, *, exact_only=False: switched.append(
         (ranges, compiler)) or "switched")
     return net, root, switched
 
@@ -2990,7 +2990,7 @@ def test_a_file_check_with_nothing_left_to_test_names_try_compiler_not_a_match(t
     agent = net.local_agent("claude-sonnet-5-5-1")[0]
     net.suggest(agent, "p", "7.1 built these", compiler="MSVC/7.1", ranges="0x401020-0x401030")
     (check,) = net.cfg(net.project_row("p"))["file_checks"]
-    assert check["status"] == "waiting" and "try_compiler" in check["said"]
+    assert check["status"] == "waiting" and "waiting for another compiler test" in check["said"]
     assert "next matches" not in check["said"]
 
 

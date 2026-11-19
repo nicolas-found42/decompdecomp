@@ -333,10 +333,10 @@ class JudgeMixin:
         return "\n".join(lines)
 
     def _rom_release_exempt(self, fn) -> str | None:
-        """A ROM project's function compiling can't help with: one with a boundary report waiting for the user."""
+        """A ROM project's function compiling can't help with yet: agents are checking its boundary."""
         proj = self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])
         if any(r.get("status") == "open" and r.get("function") == fn["name"] for r in self.cfg(proj).get("boundaries", [])):
-            return "a boundary report waits for the user"
+            return "agents are checking a boundary report"
         return None
 
     def add_spend(self, slug: str, usd: float, tokens: int) -> None:

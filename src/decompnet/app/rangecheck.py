@@ -377,7 +377,7 @@ class RangeChecks:
             self._wait(proj, c, f"waiting: {fn['name']} is next (first in line for an agent)")
             return
         c["status"] = "waiting"
-        self._save(proj, c, "waiting: no neighbour settled it yet; the user decides, or agents' next matches do")
+        self._save(proj, c, "waiting for more evidence from neighbouring functions")
 
     def task_text(self, c: dict, name: str) -> str:
         short = self.net._short((c["toolchain"], tuple(c["flags"])))
@@ -402,7 +402,17 @@ class RangeChecks:
             applied = ""
             if self.net.auto_adjusts(proj):
                 try:
-                    self.net.set_compiler_ranges(proj["slug"], [[start, end]], c["toolchain"], c["flags"])
+                    addresses = [int(addr) for addr, verdict in evidence.items() if verdict == "confirmed"]
+                    if c.get("origin_source"):
+                        addresses.insert(0, c["origin"])
+                    proof = next(((fn["name"], (c.get("origin_source") if addr == c["origin"] else None)
+                                   or c.get("proofs", {}).get(str(addr), ""))
+                                  for addr in addresses if addr is not None and start <= addr < end
+                                  and (fn := self._at(rows, addr))), None)
+                    if proof is None:
+                        raise NetworkError("The range needs a current exact match before it can change.")
+                    self.net.set_compiler_ranges(proj["slug"], [[start, end]], c["toolchain"], c["flags"],
+                                                 proof=proof, reason=text)
                     applied = " (applied)"
                 except NetworkError as e:
                     applied = f" (not applied: {e})"
@@ -478,6 +488,7 @@ class RangeChecks:
                 own = compiler_for(cfg, fn["vram"])
                 if not self.net._judge_with(proj, fn, own["toolchain"], list(own["flags"]), source)[0]:
                     c["evidence"][str(fn["vram"])] = "confirmed"
+                    c.setdefault("proofs", {})[str(fn["vram"])] = source
                     c["status"] = "checking"
                     self._save(proj, c, f"{fn['name']} matches with it")
                     self.recheck(proj["slug"], c["id"])

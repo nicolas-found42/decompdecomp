@@ -207,6 +207,7 @@ def test_agents_suggest_a_compiler_and_the_user_applies_it(tmp_path):
     with pytest.raises(NetworkError):  # a suggestion its own check disproves isn't filed
         net.suggest(a, slug, "daddu moves: some EE-GCC", "ee-gcc-2.96", function=name)
     b, _ = net.local_agent("agent-b")
+    net.auto_compiler = False
     assert "matches the game" in net.suggest(b, slug, "sd $ra, filled delay slots: SN's 2.95.3", tc, function=name)
     c, _ = net.local_agent("agent-c")
     net.suggest(c, slug, "agreed", tc)
@@ -224,8 +225,7 @@ def test_agents_suggest_a_compiler_and_the_user_applies_it(tmp_path):
 
 
 def test_auto_adjust_applies_a_proven_compiler(tmp_path):
-    """Settings: auto-adjust the compiler. A suggestion proven by a function's C applies at once; others wait for
-    agreement (three agents) or the user."""
+    """Helper agreement stays pending until a compiler reproduces a function byte for byte."""
     tc = "ee-gcc-2.95.3"
     if any(toolchains.installed(t) is None for t in (tc, "ee-gcc-3.2", "wibo")):
         pytest.skip(f"needs {tc}, ee-gcc-3.2 and wibo")
@@ -236,19 +236,14 @@ def test_auto_adjust_applies_a_proven_compiler(tmp_path):
     net.auto_compiler = True
     slug = net.import_rom(build / "SLUS_999.99", confirmed=True, log=lambda *_: None, toolchain="ee-gcc-3.2")
     agents_ = [net.local_agent(f"agent-{k}")[0] for k in range(3)]
-    for k, a in enumerate(agents_[:2]):  # agreement without proof: two isn't enough
+    for a in agents_:
         assert net.suggest(a, slug, "looks like 2.9", "ee-gcc-2.9-991111").startswith("Suggested")
     assert net.overview(slug)["compiler"]["toolchain"] == "ee-gcc-3.2"
     assert "Open suggestions" in tools.project_info(net, slug)
-    assert net.suggest(agents_[2], slug, "me too", "ee-gcc-2.9-991111").startswith("Applied")
-    assert net.overview(slug)["compiler"]["toolchain"] == "ee-gcc-2.9-991111"
-    with pytest.raises(NetworkError):
-        net.suggest(agents_[0], slug, "again", "ee-gcc-2.9-991111")  # already the project's
 
 
 def test_auto_adjust_never_breaks_matched_code(tmp_path):
-    """Unattended, three agents agreeing on the wrong compiler for the whole game: matched functions would stop
-    matching, so it isn't applied; the suggestion waits for the user."""
+    """A project with existing matches keeps its compiler when another compiler has no proof."""
     tc = "ee-gcc-2.95.3"
     if any(toolchains.installed(t) is None for t in (tc, "ee-gcc-3.2", "wibo")):
         pytest.skip(f"needs {tc}, ee-gcc-3.2 and wibo")
@@ -261,7 +256,7 @@ def test_auto_adjust_never_breaks_matched_code(tmp_path):
     agent = _name_the_game(net, slug, build / "demoq_ps2.elf")
     _attempt_every_function(net, slug, agent)
     said = [net.suggest(net.local_agent(f"voter-{k}")[0], slug, "looks like 3.2", "ee-gcc-3.2") for k in range(3)]
-    assert said[-1].startswith("Suggested, not applied by itself") and "wouldn't match" in said[-1]
+    assert "needs an exact match" in said[-1]
     ov = net.overview(slug)
     assert ov["compiler"]["toolchain"] == tc and ov["suggestions"][0]["toolchain"] == "ee-gcc-3.2"
 

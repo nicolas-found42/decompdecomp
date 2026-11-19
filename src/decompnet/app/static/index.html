@@ -197,7 +197,7 @@
       <span class="muted small" id="phSub"></span>
     </div>
     <nav class="ptabs" id="ptabs" aria-label="This project">
-      <a data-ptab="overview">Overview</a>
+      <a data-ptab="overview">Progress</a>
       <a data-ptab="functions">Functions <span class="count" id="fnTabCount"></span></a>
       <a data-ptab="agents">Agents <span class="count" id="agTabCount"></span></a>
       <a data-ptab="settings">Settings</a>
@@ -221,12 +221,9 @@
         <div class="map-tools">
           <div class="seg small" id="mapView" role="radiogroup" aria-label="Colour the map by" hidden><button type="button" role="radio" aria-checked="true" data-view="progress" class="on">Progress</button><button type="button" role="radio" aria-checked="false" data-view="compiler">Compiler</button></div>
           <div class="legend" id="mapLegend"><span><i class="sw open"></i>to do</span><span><i class="sw tried"></i>tried</span><span title="tried, and close to matching: the closer, the greener"><i class="sw close"></i>close</span><span><i class="sw work"></i>working</span><span><i class="sw match"></i>matched</span><span title="matched, and polished: real names, types and a comment, and it still matches"><i class="sw polished"></i>polished</span><span title="no C makes it, by its code's shape (hand-written assembly, a BIOS call, a piece of another function): agents aren't handed it, and it's out of the percentage"><i class="sw asm"></i>set aside</span><span title="agents of two models agreed no C makes it: set aside. Its page can give it back to the agents"><i class="sw not-c"></i>not C</span></div>
-          <button class="ghost small-btn" id="verifyAssembly" type="button" hidden>Verify SDK assembly</button>
-          <button class="ghost small-btn" id="recheckBtn" type="button" title="Look at this game again with what this version of decompdecomp knows: functions it missed, pieces of functions to join, code no C makes to set aside. Nothing agents matched is lost. It also happens by itself when helpers start after an update." aria-describedby="recheckTip">Check again</button>
-          <span class="sr-only" id="recheckTip">Look at this game again with what this version of decompdecomp knows: functions it missed, pieces of functions to join, code no C makes to set aside. Nothing agents matched is lost. It also happens by itself when helpers start after an update.</span>
         </div>
       </header>
-      <p class="muted small map-hint" id="mapHint">every square is a function, in ROM order</p>
+      <p class="muted small map-hint" id="mapHint">Each square is a piece of code. Green means the app checked that it matches the game.</p>
       <p class="muted small map-hint" id="mapCompilerNote" hidden></p>
       <div class="map-wrap" id="mapWrap">
         <canvas id="map" aria-label="Function map: every square is a function. The Functions view lists the same functions for the keyboard."></canvas>
@@ -339,8 +336,8 @@
       <section class="panel">
         <header class="panel-head"><h2>Instructions for agents</h2><span class="muted small" id="instrState"></span></header>
         <div class="pad">
-          <p class="muted small">Every agent on this game gets these with its task: what to focus on, what you know about the game, conventions, things to leave alone.</p>
-          <textarea id="instrEdit" rows="6" aria-label="Instructions for agents" placeholder="Focus on the game's own code first; leave zlib for later.&#10;The struct at 0x8004AE34 is the player (hp at +0x20).&#10;Name functions in snake_case."></textarea>
+          <p class="muted small">Tell helpers what to focus on. They read your instructions when they take their next task.</p>
+          <textarea id="instrEdit" rows="6" aria-label="Instructions for agents" placeholder="Focus on menu code first. Leave the replay system for later."></textarea>
           <label class="field"><span>Which functions helpers take first</span>
             <select id="claimOrder">
               <option value="">Default: each helper's own choice</option>
@@ -350,28 +347,60 @@
               <option value="untried">Not yet tried first</option>
             </select>
           </label>
-          <p class="muted small" id="claimOrderHint">Helpers that claim without naming a function follow this, whatever order they ask for; a function they name still comes.</p>
+          <p class="muted small" id="claimOrderHint">This order is used when a helper asks for its next task.</p>
           <div class="row"><button class="primary small-btn" id="instrSave" type="button">Save instructions</button></div>
         </div>
       </section>
       <section class="panel">
         <header class="panel-head"><h2>What agents learned</h2><span class="muted small" id="knowState"></span></header>
         <div class="pad">
-          <p class="muted small">Agents propose what every agent on this game should know. A proposal counts once two different AI models notice the same thing on their own, so run helpers of several models: they check each other. Or be the second opinion yourself: give agents a proposal you've checked.</p>
-          <label class="check"><input type="checkbox" id="knowAuto"><span>Give agents what two models agree on without asking me</span></label>
+          <p class="muted small">Helpers share findings after the app checks them or a helper using a different AI model confirms them.</p>
           <div id="knowList"></div>
         </div>
       </section>
     </div>
     <section class="panel suggest-panel" id="suggestPanel" hidden>
-      <header class="panel-head"><h2>Waiting for you</h2><span class="muted small">what agents found and can't change themselves</span></header>
+      <header class="panel-head"><h2>Agent decisions</h2><span class="muted small">What agents changed and what they are checking</span></header>
       <div class="pad" id="suggestList"></div>
     </section>
   </section>
 
   <!-- settings -->
   <section class="ptab" data-pane="settings">
+    <div class="panel pad project-setup-links"><div>
+      <h2>Set up this project</h2>
+      <p class="muted">Install the tools the game needs, then choose which agents will work on it.</p>
+    </div><div class="row"><a class="ghost" href="#/tools">Compilers &amp; tools</a><a class="ghost" href="#/agents">Agents &amp; models</a></div></div>
     <div class="cols">
+        <section class="panel" id="sdkLibrariesPanel" hidden>
+          <header class="panel-head"><h2>SDK libraries</h2></header>
+          <div class="pad">
+            <p class="muted small">An SDK is a set of tools and libraries game developers used. A library gives helpers known code and names to compare with the game. Add your library folder in Compilers &amp; tools, then choose it here. Helpers review the possible names as they work.</p>
+            <div id="sdkLibraryCopies"></div>
+            <div class="row">
+              <button class="primary small-btn" id="sdkLibrarySelect" type="button">Save and scan</button>
+              <button class="ghost small-btn" id="sdkLibraryScan" type="button">Scan again</button>
+            </div>
+            <pre class="joblog" id="sdkLibraryLog" hidden></pre>
+            <div id="sdkLibraryReview"></div>
+          </div>
+        </section>
+        <section class="panel" id="savePanel">
+          <header class="panel-head"><h2 id="saveTitle">Save your progress</h2><span class="muted small" id="saveState"></span></header>
+          <div class="pad">
+            <p class="muted small" id="saveAboutFork" hidden>The project keeps its exact matches in its own files. Use Save now to copy the best attempt so far for each function that still needs work.</p>
+            <p class="muted small" id="saveAbout">The app saves work as it goes. Use Save now to keep a copy of the project work in a folder you choose. To continue on another computer, bring that folder and your copy of the game, then choose <b>New project → Open a saved project</b>.</p>
+            <label class="field"><span>Save now, to this folder (remembered for this project; empty: its progress folder)</span><span class="pick-row"><input id="saveFolder" class="mono" placeholder="/home/you/decomp-saves/my-game"><button class="ghost small-btn" type="button" data-pick="folder" data-for="saveFolder" data-title="Where to save this project">Choose…</button></span></label>
+            <div class="row"><button class="ghost small-btn" id="saveGo" type="button">Save now</button></div>
+            <pre class="joblog" id="saveLog" hidden></pre>
+          </div>
+        </section>
+    </div>
+    <details class="panel settings-disclosure" id="projectAdvanced">
+      <summary class="panel-head"><h2>Advanced</h2></summary>
+      <div class="pad">
+        <p class="muted small">Use these tools to inspect how the app builds the game or change what the project covers.</p>
+        <div class="cols">
       <section class="panel" id="compilerPanel" aria-labelledby="compilerH">
         <header class="panel-head"><h2 id="compilerH">Compiler</h2><span class="muted small" id="compilerState"></span></header>
         <div class="pad">
@@ -382,14 +411,13 @@
           <div class="answer" id="compilerAnswer"></div>
           <div id="compilerParts"></div>
           <div id="compilerWaiting"></div>
-          <label class="check" id="autoAdjustRow"><input type="checkbox" id="autoAdjust"><span><b>Apply proven changes by themselves.</b> When agents prove a part of the game was built with another compiler (its code matches with it, and its neighbours agree), the app uses it without asking you.</span></label>
+          <label class="check" id="autoAdjustRow"><input type="checkbox" id="autoAdjust"><span><b>Use verified compiler suggestions automatically.</b> The app checks that the new settings produce an exact match and keep existing matches.</span></label>
           <details class="more" id="installedCompilerTest"><summary>Find better compiler settings <span id="compilerRunState"></span></summary><div class="compiler-test-body">
-              <p class="small muted">Test saved C locally, then review and apply the results. No AI tokens are used.</p>
+              <p class="small muted">Try other settings on work helpers have saved. The app can use exact matches it verifies. This runs on your computer and uses no AI credits.</p>
               <div class="compiler-test-options">
-                <label class="check"><input type="checkbox" id="compilerFlagsOnly"><span><b>Flag variations only</b><small>Faster: keep each function’s compiler and test different flags.</small></span></label>
-                <label class="check"><input type="checkbox" id="compilerUsedProfilesOnly"><span><b>Only profiles used in this project</b><small>Faster: test exact compiler and flag combinations already assigned to functions.</small></span></label>
-                <label class="check"><input type="checkbox" id="compilerRetest"><span><b>Retest completed functions</b><small>Leave off to continue with new or changed attempts.</small></span></label>
-                <label class="check"><input type="checkbox" id="compilerAutoApply" checked><span><b>Automatically apply exact matches</b><small>Apply only byte-exact matches when comparison finishes. Review partial improvements in the results drawer.</small></span></label>
+                <label class="check"><input type="checkbox" id="compilerFlagsOnly"><span><b>Flag variations only</b><small>Try other build options with the same compiler. This is faster.</small></span></label>
+                <label class="check"><input type="checkbox" id="compilerUsedProfilesOnly"><span><b>Only profiles used in this project</b><small>Try only settings that another function in this project already uses.</small></span></label>
+                <label class="check"><input type="checkbox" id="compilerRetest"><span><b>Retest completed functions</b><small>Check earlier results again. Leave this off to test new or updated work only.</small></span></label>
               </div>
               <p id="compilerTestScope" class="muted small">All installed compilers and supported flag variations · new or changed attempts only.</p>
               <div class="row"><button class="primary" type="button" id="testInstalledCompilers">Find better settings</button></div>
@@ -412,33 +440,9 @@
             <summary>How the app checks</summary>
             <div class="more-body" id="compilerEvidence"></div>
           </details>
-          <details class="more">
-            <summary>Change the compiler yourself</summary>
-            <div class="more-body">
-              <p class="muted small" id="setTcWhat">Every function is built with this compiler and these flags. If almost nothing matches, the game was probably built with another compiler or flags.</p>
-              <label class="field"><span>Compiler</span><select id="setTc"></select></label>
-              <label class="field" id="setFlagsRow"><span>Flags</span><input id="setFlags" class="mono"></label>
-              <label class="field"><span>Only for these address ranges (optional: parts of the game built with another compiler)</span><input id="setRanges" class="mono" placeholder="0x10BFD0-0x10CD40, 0x1106C0-0x1107C0"></label>
-              <div class="row"><button class="primary small-btn" id="setTcSave" type="button">Save</button><button class="ghost small-btn" id="setTcReset" type="button">Default flags</button></div>
-              <pre class="joblog" id="setTcLog" hidden></pre>
-            </div>
-          </details>
         </div>
       </section>
-      <div class="stack-col">
-        <section class="panel" id="sdkLibrariesPanel" hidden>
-          <header class="panel-head"><h2>SDK libraries</h2></header>
-          <div class="pad">
-            <p class="muted small">Register extracted SDK library folders in Compilers &amp; tools.</p>
-            <div id="sdkLibraryCopies"></div>
-            <div class="row">
-              <button class="primary small-btn" id="sdkLibrarySelect" type="button">Save and scan</button>
-              <button class="ghost small-btn" id="sdkLibraryScan" type="button">Scan again</button>
-            </div>
-            <pre class="joblog" id="sdkLibraryLog" hidden></pre>
-            <div id="sdkLibraryReview"></div>
-          </div>
-        </section>
+          <div class="stack-col">
         <section class="panel" id="scopePanel" hidden>
           <header class="panel-head"><h2>What this project covers</h2></header>
           <div class="pad">
@@ -452,32 +456,32 @@
           <header class="panel-head"><h2>About this project</h2></header>
           <div class="pad">
             <dl class="facts one" id="projFacts"></dl>
-            <label class="check" id="agentBackgroundJobsRow" hidden><input id="agentBackgroundJobs" type="checkbox"><span>Allow helpers and MCP users to start bounded background jobs</span></label>
+            <label class="check" id="agentBackgroundJobsRow" hidden><input id="agentBackgroundJobs" type="checkbox"><span>Let agents start longer checks. The app limits how many run at once.</span></label>
             <div class="row"><button class="ghost small-btn" id="folderBtn" type="button">Open project folder</button></div>
             <div id="reimportGame">
-              <p class="muted small">Choose your copy of the game again and replace its analysis. Matched C is kept only for functions whose target bytes are unchanged; changed functions reopen. Notes, settings and saved progress are kept. Helpers stop while the game is reimported.</p>
+              <p class="muted small">Choose the game file again if you need to rebuild its function list. Helpers pause during the import. Verified work stays matched wherever the original game bytes are the same.</p>
               <div class="row"><button class="ghost small-btn" id="reimportBtn" type="button">Choose game and reimport</button></div>
               <div class="workbar" id="reimportWork" role="progressbar" aria-label="Reimporting game" hidden><i></i></div>
               <pre class="joblog" id="reimportLog" hidden></pre>
             </div>
           </div>
         </section>
-        <section class="panel" id="savePanel">
-          <header class="panel-head"><h2 id="saveTitle">Save your progress</h2><span class="muted small" id="saveState"></span></header>
-          <div class="pad">
-            <p class="muted small" id="saveAboutFork" hidden>The matched functions are in this project's own source files and git. What's only in decompdecomp is each unmatched function's closest attempt so far (a near miss is often 97–99.9%): Save now writes those as <code>best/&lt;function&gt;.c</code>, each saying how close it is and which source file it belongs in. Handy for a port while matching goes on.</p>
-            <p class="muted small" id="saveAbout">Your <code>progress</code> folder is the source of truth: matched C, notes, names, compiler ranges and settings, never the game itself. Work is saved automatically. Edit files or pull contributions there; decompdecomp reads the changes and judges affected code again automatically. Open this folder on another computer with <b>New project → Open a saved project</b>.</p>
-            <label class="field"><span>Save now, to this folder (remembered for this project; empty: its progress folder)</span><span class="pick-row"><input id="saveFolder" class="mono" placeholder="/home/you/decomp-saves/my-game"><button class="ghost small-btn" type="button" data-pick="folder" data-for="saveFolder" data-title="Where to save this project">Choose…</button></span></label>
-            <div class="row"><button class="ghost small-btn" id="saveGo" type="button">Save now</button></div>
-            <pre class="joblog" id="saveLog" hidden></pre>
+            <section class="panel"><header class="panel-head"><h2>Check the game again</h2></header><div class="pad">
+              <p class="muted small">Use Check again after an app update to look for code it missed. Verify SDK assembly checks whether the app can reproduce code that helpers set aside.</p>
+              <div class="row">
+          <button class="ghost small-btn" id="verifyAssembly" type="button" hidden>Verify SDK assembly</button>
+          <button class="ghost small-btn" id="recheckBtn" type="button" title="Look at this game again with what this version of decompdecomp knows: functions it missed, pieces of functions to join, code no C makes to set aside. Nothing agents matched is lost. It also happens by itself when helpers start after an update." aria-describedby="recheckTip">Check again</button>
+          <span class="sr-only" id="recheckTip">Look at this game again with what this version of decompdecomp knows: functions it missed, pieces of functions to join, code no C makes to set aside. Nothing agents matched is lost. It also happens by itself when helpers start after an update.</span>
+              </div></div>
+            </section>
           </div>
-        </section>
-      </div>
-    </div>
+        </div>
     <section class="panel danger-zone">
       <header class="panel-head"><h2>Remove project</h2></header>
       <div class="pad row"><p class="muted small grow">Matched functions and notes are deleted from decompdecomp. You can keep or delete the project folder.</p><button class="ghost danger" id="deleteBtn" type="button">Remove project…</button></div>
     </section>
+      </div>
+    </details>
   </section>
 </main>
 
@@ -489,37 +493,41 @@
     <summary class="panel-head"><h2 id="agAppsH">Agent apps on this computer <span class="disclosure-context" id="agAppsContext">— Checking installed apps…</span></h2><button class="disclosure-action" id="agRefresh" type="button" title="Refresh installed agent apps">↻ Refresh</button></summary><div class="pad">
     <div class="ag-grid" id="agList"></div></div>
   </details>
-  <details class="panel settings-disclosure"><summary class="panel-head"><h2>Agent prompts <span class="disclosure-context" id="agPromptsContext">— Global session defaults</span></h2></summary><div class="pad"><p class="small muted">Global defaults for new sessions. Agents can override them individually. Project instructions, guides and continuation context are still appended to the initial prompt.</p><div id="globalPromptSettings"></div><pre id="globalPromptLog" hidden></pre></div></details>
-  <details class="panel settings-disclosure"><summary class="panel-head"><h2>Agent tools &amp; usage <span class="disclosure-context" id="agToolsContext">— Optional tools and usage</span></h2><button id="agentToolsRefresh" class="disclosure-action" type="button" title="Refresh tools and usage counts">↻ Refresh</button></summary><div class="pad"><p class="small muted">Disable optional tools to reduce agent context. Global switches apply to every agent; per-agent tools can disable additional tools. Required core tools stay enabled. New tool lists take effect at the next session or MCP reconnect; cached calls to disabled tools are rejected immediately.</p><details class="tool-coverage more"><summary>About usage counts</summary><p id="agentToolCoverage" class="small muted"></p></details><div id="agentToolCatalog"></div><pre id="agentToolLog" hidden></pre></div></details>
   <div class="cols ag-cols">
   <details class="panel manual-mcp settings-disclosure" aria-labelledby="mcpHeading">
     <summary class="panel-head"><h2 id="mcpHeading">Connect another AI tool with MCP <span class="disclosure-context" id="agMcpContext">— Local connections</span></h2></summary>
     <div class="pad">
-      <p>Use the local MCP server with an AI tool that supports Streamable HTTP and bearer authentication. Keep decompdecomp running on this computer.</p>
+      <p>Connect an outside agent, such as Codex, to one project. The connection lets it inspect the game and work on it. Keep decompdecomp open while it works.</p>
       <div id="mcpStatus" role="status"></div>
       <label class="field"><span>Project for this connection</span><select id="mcpProject"></select></label>
       <div class="row"><button class="primary" id="mcpCreate" type="button">Create connection</button><button class="ghost" id="mcpRefresh" type="button">Refresh</button></div>
       <pre class="joblog" id="mcpLog" hidden></pre>
       <div id="mcpConfig"></div>
       <details><summary>Available tools <span id="mcpToolCount"></span></summary><div id="mcpTools"></div></details>
-      <details><summary>Your manual connections</summary><div id="mcpConnections"></div></details>
+      <details><summary>Saved connections</summary><div id="mcpConnections"></div></details>
     </div>
   </details>
     <details class="panel settings-disclosure" open><summary class="panel-head"><h2>Models with an API key <span class="disclosure-context" id="agApiContext">— Checking saved endpoints…</span></h2></summary><div class="pad" id="apiBox"></div></details>
   </div>
+  <details class="panel settings-disclosure"><summary class="panel-head"><h2>Advanced</h2></summary>
+    <div class="pad">
+  <details class="panel settings-disclosure"><summary class="panel-head"><h2>Agent prompts <span class="disclosure-context" id="agPromptsContext">— Global session defaults</span></h2></summary><div class="pad"><p class="small muted">Change the instructions helpers get when they start. You can set different instructions on a helper’s card or for one project.</p><div id="globalPromptSettings"></div><pre id="globalPromptLog" hidden></pre></div></details>
+  <details class="panel settings-disclosure"><summary class="panel-head"><h2>Agent tools &amp; usage <span class="disclosure-context" id="agToolsContext">— Optional tools and usage</span></h2><button id="agentToolsRefresh" class="disclosure-action" type="button" title="Refresh tools and usage counts">↻ Refresh</button></summary><div class="pad"><p class="small muted">Choose which extra tools agents can use. Changes here apply to all projects. A helper can have fewer tools on its own card. Agents see the new list when they start again or reconnect.</p><details class="tool-coverage more"><summary>About usage counts</summary><p id="agentToolCoverage" class="small muted"></p></details><div id="agentToolCatalog"></div><pre id="agentToolLog" hidden></pre></div></details>
+    </div>
+  </details>
 </main>
 
 <!-- ================================================================ compilers & tools -->
 <main id="toolsPage" class="view" hidden>
   <header class="page-head"><p class="eyebrow">Compilers &amp; tools</p><h1>What builds your games</h1>
-    <p class="muted">decompdecomp installs what a project needs by itself. Proprietary compilers (IDO, CodeWarrior, Visual C++) are only installed when you accept that.</p></header>
+    <p class="muted">A compiler turns an agent’s work into code the app can compare with the game. Analysis tools help agents understand the original code. The app installs the tools a project needs and asks before installing tools that require your consent.</p></header>
   <div class="chips" id="toolChips"></div>
   <section class="panel" id="ps2Analysis" hidden>
     <header class="panel-head"><h2 id="ps2AnalysisTitle">PS2 analysis</h2></header>
     <div class="pad">
       <label class="field"><span>Project</span><select id="ps2AnalysisProject"></select></label>
-      <label class="field" id="ps2AddressField"><span>Function address (hex)</span><input class="mono" id="ps2Address" placeholder="0x0102A028"></label>
-      <div id="ps2CompanionField" hidden><label class="field"><span>Comparison ELF</span><input class="mono" id="ps2Companion" placeholder="Project’s analysis-inputs/CORE.elf"></label><button class="ghost small-btn" id="ps2Choose" type="button">Choose ELF…</button></div>
+      <label class="field" id="ps2AddressField"><span>Function address</span><input class="mono" id="ps2Address" placeholder="0x0102A028"><small class="muted">Copy the address shown when you open a function in the project.</small></label>
+      <div id="ps2CompanionField" hidden><label class="field"><span>PS2 program file to compare</span><input class="mono" id="ps2Companion" placeholder="Project’s analysis-inputs/CORE.elf"><small class="muted">Choose a second copy of a PS2 program in ELF format. The tool looks for code the two have in common.</small></label><button class="ghost small-btn" id="ps2Choose" type="button">Choose ELF…</button></div>
       <div class="row"><button class="primary" id="ps2Run" type="button">Run analysis</button><button class="ghost" id="ps2Dismiss" type="button">Close results</button></div>
       <pre class="log" id="ps2AnalysisLog" aria-live="polite"></pre>
       <h3 id="ps2ResultTitle" hidden></h3><pre id="ps2Result" aria-label="Analysis output" tabindex="0" hidden></pre>
@@ -536,7 +544,7 @@
     <div class="stack-col">
       <section class="panel"><header class="panel-head"><h2>This computer</h2></header><div class="pad" id="setComputer"></div></section>
       <section class="panel"><header class="panel-head"><h2>ROM library</h2></header><div class="pad">
-        <p class="muted small">Imported projects search this folder and its subfolders for a game with the expected SHA-1. N64 byte orders are normalized for matching. Files stay on this computer; archives must be extracted first.</p>
+        <p class="muted small">Choose a folder where you keep game files. When you open a saved project, the app looks here for the same copy of the game. Unzip any compressed game files first.</p>
         <label class="field"><span>Folder path (leave empty to disable)</span><input id="romLibrary" class="mono" placeholder="/Volumes/Data/ROMs"></label>
         <div class="row"><button class="ghost" id="romLibraryPick" type="button">Choose folder…</button><button class="primary" id="romLibrarySave" type="button">Save</button></div>
       </div></section>

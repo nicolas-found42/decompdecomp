@@ -27,7 +27,7 @@ folder, `src/decompnet/consoles/<id>/`; a new console adds a column (CONTRIBUTIN
 | R5900 decompiler, SDK signatures and cross-ELF symbol candidates in the desktop and agent tools | — | — | ✓ | — | — | — | — | — | — | — | — | — |
 | Original DLL imports, linker thunks and referenced data in helper briefs and tools | — | — | — | — | — | — | — | — | ✓ from scratch | — | — | — |
 | Verify assembly against pinned PS2SDK sources | — | — | ✓ | — | — | — | — | — | — | — | — | — |
-| SDK archive candidates and owner-approved names | — | — | ✓ ROM, including imported overlays | — | — | — | — | — | — | — | — | — needs original image mapping |
+| SDK archive candidates and names reviewed by agents | — | — | ✓ ROM, including imported overlays | — | — | — | — | — | — | — | — | — needs original image mapping |
 | Status | recommended | beta | beta | beta | beta | beta | beta | beta | beta | beta | beta | the project's own |
 | Start from your own copy | ✓ | ✓ | ✓ | ✓ decrypted EBOOT.ELF | ✓ decrypted ELF | ✓ unencrypted or decrypted program and modules (ISO, CSO, CHD) | ✓ ROM | ✓ | ✓ | ✓ default.xbe, .xiso or Redump .iso | ✓ | fork by address |
 | Judge | link · compare | link · compare | link · compare | link · compare | objdiff | link · compare | link · compare | objdiff | objdiff | objdiff | objdiff | objdiff |
@@ -110,6 +110,8 @@ Where to start on a gap:
   aren't listed. A game's PDB has to be beside its program, or dropped with it, at import: a project made before
   can't take one in yet.
 - **Compiler comparison in project mode** needs a source-file trial and an objdiff-backed apply path for each project console. The current saved-C comparison panel runs on ROM projects, including GBA and PS3.
+- **Agent compiler trials on shared source files** need to check every build of the source while testing the new
+  candidate. Use an agent compiler range check for these files, which tests all their builds.
 - **Function-end reports** cut MIPS, ARM/Thumb and PPC functions (`engine._cut`) and, in project mode, a console's own
   (`Console.cut_function`: PC's functions.json). DS and GameCube/Wii projects need theirs, so their agents aren't
   offered `report_boundary` yet.
@@ -138,6 +140,9 @@ Where to start on a gap:
 - **Agents & models controls.** Collapsible sections show installed agent apps, prompt templates, optional tool
   visibility and recorded usage, manual project-scoped MCP connections, and saved API endpoints. Global and
   per-helper prompt and tool choices take effect on new sessions; disabled tool calls are rejected immediately.
+- **Agent decisions.** Helpers and external MCP clients review PS2 SDK names. Compiler changes need an exact
+  match and preserve existing matches they affect. Independently confirmed ROM function-end reports are checked
+  for byte coverage and existing matches. The desktop shows decisions, evidence, and work waiting for a check.
 - **Portable Windows app.** A release ZIP bundles a relocatable `decompdecomp.exe`, Python and app dependencies. It needs the Microsoft window prerequisites already installed. CI extracts the ZIP to a different path and checks the EXE, server import and isolated startup/Stop.
 
 - **64-bit Windows games (x64).** A 64-bit program (PE32+) imports like a 32-bit one and builds with Visual C++
@@ -322,7 +327,7 @@ Where to start on a gap:
   own, open to agents when it reads as code and set aside with what agents said when it doesn't
   (`scratch.cut_function`). As a join is, it's kept only when the game's code still rebuilds byte for byte, never
   touches a matched function, and one that doesn't hold is remembered. Cutting off only the padding Visual C++ puts
-  in the function's own section is refused. ROM projects still ask the user. API helpers have the tool now too.
+  in the function's own section is refused. API helpers and external MCP clients can report boundaries.
 - **Windows PC: import thunks named and set aside.** A call to a DLL's function declared without
   `__declspec(dllimport)` goes to a `jmp [__imp__Name]` the linker adds. Ghidra marks those as thunks and the
   import left them out, so their bytes became one function with the code before them, and calls to them read as

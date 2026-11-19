@@ -1029,6 +1029,8 @@ class Manager:
         self._set(s, "paused", why, None, todo)
         s.push("error", f"paused: {why}" + (f" {todo}" if todo else ""))
         self.net.record_event(s.slug, "paused", why, s.agent_name)  # the notification centre tells the user
+        if todo:
+            self.net.record_event(s.slug, "needs-setup", todo, s.agent_name)
 
     def _finish(self, s: Session, why: str) -> None:
         """It stopped by itself: nothing to do here any more."""
@@ -1080,6 +1082,9 @@ class Manager:
                 break
             if (cap := self.over_budget(s.slug)) is not None:
                 self._finish(s, f"the agents on this project have spent the ${cap:.2f} budget (Setup)")
+                self.net.record_event(s.slug, "needs-setup",
+                                      "The spending limit was reached. Change the limit in Settings to keep working.",
+                                      s.agent_name)
                 break
             if self._room_away(s):
                 continue

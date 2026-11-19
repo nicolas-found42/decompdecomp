@@ -2,18 +2,56 @@
 exactly as they were, through the same /api/compiler add path the Settings use."""
 
 import json
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 
+import pytest
 from starlette.testclient import TestClient
 
+from decompnet import consoles
 from decompnet.app.engine import RomNetwork
 from decompnet.app.server import build
 from decompnet.consoles.gc_wii import GAMECUBE
 from decompnet.forks.project import ForkProject
+from decompnet.network import NetworkError
 
 from .test_app_server import PORT, SECRET, WINDOW
 from .test_gc_compilers import _project as gc_project
 from .test_loading import tiny_game
+
+
+@pytest.mark.parametrize("action", ["trial", "range", "comparison"])
+def test_compiler_checks_refuse_a_setting_changed_while_waiting_for_the_lock(tmp_path, monkeypatch, action):
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    forks = net.forks
+    unit = SimpleNamespace(source="code.c", name="code", complete=False)
+    project = SimpleNamespace(unit=lambda name: unit, units_for=lambda source: [unit])
+    active, writes = ["old"], []
+    console = SimpleNamespace(file_compiler=lambda fp, source: active[0],
+                              project_compilers=lambda fp: [SimpleNamespace(id="trial")],
+                              set_file_compiler=lambda *args: writes.append(args))
+
+    @contextmanager
+    def after_another_agent_commits():
+        active[0] = "committed"
+        yield
+
+    monkeypatch.setattr(consoles, "get", lambda platform: console)
+    monkeypatch.setattr(forks, "get", lambda slug: ({"id": 1}, project, {}))
+    monkeypatch.setattr(forks, "_fn", lambda slug, function: {"unit": "code", "status": "open", "name": "f"})
+    monkeypatch.setattr(forks, "_tree", lambda proj: SimpleNamespace(exclusive=after_another_agent_commits,
+                                                                   shared=after_another_agent_commits))
+    monkeypatch.setattr(forks, "_unit_lock", lambda *args: nullcontext())
+    monkeypatch.setattr(forks, "_units_locked", lambda *args: nullcontext())
+    monkeypatch.setattr(forks, "_hold_for_try", lambda *args: None)
+    with pytest.raises(NetworkError, match="Another check changed this file's compiler"):
+        if action == "trial":
+            forks.try_compiler(None, "project", "f", "trial", source="int f(void) { return 0; }")
+        elif action == "range":
+            forks.set_file_compiler_by_hand("project", unit.source, "trial", exact_only=True)
+        else:
+            forks.file_scores("project", unit.source, "trial")
+    assert active == ["committed"] and not writes
 
 
 def _client(tmp_path, net):
@@ -76,7 +114,7 @@ def test_a_project_files_compiler_removed_and_reverted_through_the_api_comes_bac
                    ("revert-gc", "Revert GC", str(root), "ppc",
                     json.dumps({"kind": "fork", "platform": "gc", "version": "GZ2E01", "compiler": "GC/1.3.2"})))
 
-    def switch(self, slug, source, compiler):
+    def switch(self, slug, source, compiler, *, exact_only=False):
         _, project, cfg = self.get(slug)
         GAMECUBE.set_file_compiler(project, source, compiler)
     monkeypatch.setattr(type(net.forks), "set_file_compiler_by_hand", switch)

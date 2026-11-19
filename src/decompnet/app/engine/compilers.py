@@ -33,11 +33,7 @@ MAX_COMPILER_ALTERNATIVES = 2
 
 
 class CompilerMixin:
-    # Settings: auto-adjust compiler. A suggested compiler is applied without asking once it's proven (a function's
-    # C matches with it) or three agents agree on it (see suggest)
-    auto_compiler = False
-
-    AGREE = 3
+    auto_compiler = True
 
     SURVEY_MIN_INSNS = 12  # a shorter function comes out the same from several compilers: it proves nothing
     # The compiler answer's own checking: the survey runs again by itself at most this often (it skips C it tried, so
@@ -348,14 +344,14 @@ class CompilerMixin:
         if any(r["id"] != fn["id"] for r in others):
             raise NetworkError("Another function shares this address range; settings cannot be isolated safely.")
         matched, diff, _ = self._judge_with(proj, fn, toolchain, flags, source)
-        if diff is None or (not matched and fn["best_score"] is not None and diff.score >= fn["best_score"]):
-            raise NetworkError("These settings no longer improve this function. Run a fresh comparison.")
+        if diff is None or not matched:
+            raise NetworkError("These settings need to produce an exact match before the project can use them.")
         default = self.cfg(proj)["compiler"]
         is_default = toolchain == default["toolchain"] and flags == default["flags"]
         # split: the functions around this one in a range keep the range's compiler (a default winner just leaves
         # this function out of it)
         self.set_compiler_ranges(slug, [[fn["vram"], fn["vram"] + fn["size"]]],
-                                 None if is_default else toolchain, flags, split=True)
+                                 None if is_default else toolchain, flags, split=True, proof=(fn["name"], source))
         agent, _ = self.local_agent("autopilot")
         self.try_quietly(agent, self._project(slug), self._function(function, slug), source)
         fresh = self._function(function, slug)
@@ -370,6 +366,34 @@ class CompilerMixin:
                 db.execute("UPDATE compiler_tests SET result=?,input_digest=? WHERE function_id=?",
                            (json.dumps(updated), current_digest, fn["id"]))
         return {"function": function, "matched": fresh["status"] == "matched"}
+
+    def apply_compiler_settings(self, agent: Agent, slug: str, function: str, compiler: str, reason: str,
+                                flags: str = "", source: str = "") -> str:
+        """Give an exact match its own compiler settings without changing its neighbours."""
+        if not reason.strip():
+            raise NetworkError("Explain why these compiler settings fit the function.")
+        if link := self._link(slug):
+            return link.call("/collab/compiler-settings", agent, function=function, compiler=compiler, reason=reason,
+                             flags=flags, source=source)
+        if self.fork_slug(slug):
+            return self.forks.try_compiler(agent, slug, function, compiler, flags, source, reason=reason.strip()[:1000])
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        fn = self._function(function, slug)
+        if fn["vram"] is None or not fn["size"]:
+            raise NetworkError("Choose a function with a known start and size.")
+        start, end = fn["vram"], fn["vram"] + fn["size"]
+        rows = self.store.all("SELECT id FROM functions WHERE project_id=? AND vram>=? AND vram<?",
+                              proj["id"], start, end)
+        if any(row["id"] != fn["id"] for row in rows):
+            raise NetworkError("This function shares its address range. Test a compiler that suits the whole range.")
+        tc = self._toolchain_named(cfg, compiler)
+        options = flags.split() or consoles.default_flags(cfg, tc)
+        default = cfg["compiler"]
+        use_default = (tc, options) == (default["toolchain"], default["flags"])
+        self.set_compiler_ranges(slug, [[start, end]], None if use_default else tc, options, split=True,
+                                 proof=(fn["name"], source.strip()), agent=agent, reason=reason.strip()[:1000])
+        return f"Applied {consoles.compiler_name(tc)} to {fn['name']}. The exact match passed; submit it with compile_and_diff."
 
     def survey_compilers(self, slug: str, log=lambda line: None, limit: int = 400, state: dict | None = None) -> dict:
         """The judge's part of the compiler map. Agents' C for functions that don't match yet, built with each other
@@ -482,11 +506,10 @@ class CompilerMixin:
 
     def suggest(self, agent: Agent, slug: str, text: str, compiler: str = "", flags: str = "",
                 function: str | None = None, ranges: str = "", source: str = "") -> str:
-        """A change to the project's setup an agent can't make itself (the compiler, its flags, anything), for the user
-        to apply or dismiss. With a compiler and a function whose C is ready, it's checked first: that C, built with the
-        suggested compiler, matches the game or doesn't (GTA San Andreas: agents said EE-GCC 2.96, then 2.95.3). The
-        same compiler and flags suggested again counts as another agent agreeing. `ranges` ("0x10BFD0-0x10CD40, ..."):
-        the compiler built those address ranges only (a game built by several compilers)."""
+        """Check a proposed compiler against the game before applying it. Ranges are checked on their neighbours."""
+        if link := self._link(slug):
+            return link.call("/collab/suggestion", agent, text=text, compiler=compiler, flags=flags,
+                             function=function or "", ranges=ranges, source=source)
         text = " ".join(text.split())[:1000]
         spans = parse_ranges(ranges)
         if spans and not compiler:
@@ -530,15 +553,18 @@ class CompilerMixin:
         note = f" ({check})" if check else ""
         if spans and tc:  # a hypothesis: its neighbours decide (rangecheck.py), not its size
             return f"Suggested.{note} " + self.rangechecks.propose(proj, s, function, tc, flag_list, spans, source)
-        if tc and self.auto_adjusts(proj) and ("matches the game" in (s["check"] or "") or len(s["agents"]) >= self.AGREE):
+        if tc and function and check and "matches the game" in check and self.auto_adjusts(proj):
             try:
-                self.resolve_suggestion(slug, s["id"], apply=True, guard=True)
-            except NetworkError as e:  # it would break matched code: it waits for the user
-                return f"Suggested, not applied by itself: {e}.{note}"
-            where = f"{', '.join(f'0x{a:X}-0x{b:X}' for a, b in spans)} build" if spans else "the project builds"
-            return (f"Applied (the user lets agreed compiler changes apply themselves): {where} with "
-                    f"{consoles.compiler_name(tc)} {' '.join(flag_list)} from now on.{note}")
-        return f"Suggested: the user sees it on the project page and can apply it.{note}"
+                self.set_compiler(slug, tc, flag_list, guard=True, proof=(function, source), agent=agent, reason=text)
+            except NetworkError as e:
+                failure = str(e)
+                self._update_cfg(slug, lambda c: next(row for row in c["suggestions"] if row["id"] == s["id"])
+                                 .update(check=failure))
+                return f"Suggested. The project kept its compiler. {e}"
+            self._update_cfg(slug, lambda c: next(row for row in c["suggestions"] if row["id"] == s["id"])
+                             .update(status="applied"))
+            return f"Applied {consoles.compiler_name(tc)} {' '.join(flag_list)}. Existing matches still pass.{note}"
+        return f"Suggested. A compiler change needs an exact match before it can apply.{note}" if tc else "Suggestion recorded."
 
     def auto_adjusts(self, proj) -> bool:
         """Whether this project's proven compiler suggestions apply by themselves: the project's own setting (a game
@@ -822,7 +848,8 @@ class CompilerMixin:
             "status", "applied" if apply else "dismissed"))
 
     def set_compiler_ranges(self, slug: str, ranges: list[list[int]], toolchain: str | None,
-                            flags: list[str] | None = None, reopen: bool = False, split: bool = False) -> list[str]:
+                            flags: list[str] | None = None, reopen: bool = False, split: bool = False, *,
+                            proof: tuple[str, str] | None = None, agent: Agent | None = None, reason: str = "") -> list[str]:
         """Address ranges built by another compiler than the rest of the game (replacing ranges they overlap), or
         with toolchain None: those ranges back to the project's compiler. Matched functions that wouldn't match any
         more stop it, unless `reopen` (removing a range the user judged a quirk: Ridge Racer V's two GCC 2.96 ranges
@@ -841,8 +868,6 @@ class CompilerMixin:
             flags = flags or consoles.default_flags(cfg, toolchain)
         flags = flags or []
 
-        before = self.cfg(self._project(slug)).get("compiler_ranges", [])
-
         def outside(r):
             """The parts of range r that none of `ranges` covers."""
             parts = [(r["start"], r["end"])]
@@ -859,26 +884,15 @@ class CompilerMixin:
             if toolchain:
                 keep += [{"start": a, "end": b, "toolchain": toolchain, "flags": flags} for a, b in ranges]
             cfg["compiler_ranges"] = sorted(keep, key=lambda r: r["start"])
-        self._update_cfg(slug, change)
         proj = self._project(slug)
-        # functions already matched in those ranges must still match with it (auto-adjust runs unattended)
-        inside = [f for f in self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
-                  if any(a <= (f["vram"] or -1) < b for a, b in ranges)]
-        broken = self.regression_test(proj, None, only=inside,
-                                      header_for=lambda f: self._context(proj["id"], f["unit"])["header"]) if inside else []
-        reopened = []
-        if broken and reopen and not toolchain:
-            reopened = self._reopen(proj, [n for n, _ in broken], "its range was removed")
-        elif broken:
-            self._update_cfg(slug, lambda cfg: cfg.__setitem__("compiler_ranges", before))
-            raise NetworkError(f"{len(broken)} matched function(s) in those ranges wouldn't match with it any more "
-                               f"({', '.join(n for n, _ in broken[:5])}): narrow the ranges"
-                               + ("" if toolchain else ", or remove them and reopen those functions"))
-        with self.store.tx() as db:
-            where = ", ".join(f"0x{a:X}-0x{b:X}" for a, b in ranges)
-            self._event(db, proj["id"], None, "compiler", f"{consoles.compiler_name(toolchain)} {' '.join(flags)} for {where}"
-                        if toolchain else f"the project's compiler again for {where}")
-        return reopened
+        cfg = json.loads(proj["config"])
+        change(cfg)
+        where = ", ".join(f"0x{a:X}-0x{b:X}" for a, b in ranges)
+        detail = (f"{consoles.compiler_name(toolchain)} {' '.join(flags)} for {where}"
+                  if toolchain else f"the project's compiler again for {where}")
+        broken = self._commit_compiler_change(proj, "compiler_ranges", cfg["compiler_ranges"], detail,
+                                              proof=proof, agent=agent, reason=reason, reopen=reopen and not toolchain)
+        return self._reopen(proj, [name for name, _ in broken], "its range was removed") if broken else []
 
     def _reopen(self, proj, names: list[str], why: str) -> list[str]:
         """Matched functions open again: their matching C becomes their best attempt, scored with the compiler they're
@@ -899,26 +913,72 @@ class CompilerMixin:
             opened.append(name)
         return opened
 
-    def set_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None, guard: bool = False) -> None:
-        """`guard` (auto-adjust, unattended): matched functions must still match with it, checked on up to 40 of them
-        across the game, or nothing changes."""
+    def set_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None, guard: bool = False, *,
+                     proof: tuple[str, str] | None = None, agent: Agent | None = None, reason: str = "") -> None:
+        """Change the default compiler after checking every affected match when an agent asks."""
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
         proj = self._project(slug)
         tc = toolchains.get(toolchain)
-        cfg = json.loads(proj["config"])  # a copy of its own: changed below
-        before = cfg["compiler"]
-        cfg["compiler"] = {"toolchain": tc.id, "flags": flags or consoles.default_flags(cfg, tc.id),
-                           "timeout": 20}
-        with self.store.tx() as db:
-            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
-            db.execute("UPDATE functions SET seed=NULL WHERE project_id=? AND status='open'", (proj["id"],))
-            self._event(db, proj["id"], None, "compiler", f"{tc.name} {' '.join(cfg['compiler']['flags'])}")
-        matched = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched' ORDER BY vram", proj["id"])
-        sample = matched[::max(1, len(matched) // 40)][:40]
-        broken = self.regression_test(self._project(slug), None, only=sample,
-                                      header_for=lambda f: self._context(proj["id"], f["unit"])["header"]) if guard and sample else []
-        if broken:
-            self._update_cfg(slug, lambda c: c.__setitem__("compiler", before))
+        settings = {"toolchain": tc.id, "flags": flags or consoles.default_flags(self.cfg(proj), tc.id), "timeout": 20}
+        self._commit_compiler_change(proj, "compiler", settings, f"{tc.name} {' '.join(settings['flags'])}",
+                                     guard=guard, proof=proof, agent=agent, reason=reason)
+
+    def _commit_compiler_change(self, proj, key, value, detail, *, proof=None, agent=None, reason="", guard=True,
+                                reopen=False):
+        """Test a private configuration, then save it only while the checked inputs are current."""
+        pid = proj["id"]
+        current = self.cfg(proj)
+        proposed = current | {key: value}
+        trial = dict(proj) | {"config": json.dumps(proposed)}
+        fields = ("id", "name", "target", "relocs", "unit", "vram", "rom_offset", "matched_source")
+        select = f"SELECT {','.join(fields)} FROM functions WHERE project_id=? AND status='matched'"
+
+        def affected(rows):
+            return [row for row in rows if compiler_for(current, row["vram"]) != compiler_for(proposed, row["vram"])]
+
+        rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", pid) if guard else []
+        matched = affected(rows)
+        witness = self._function(proof[0], proj["slug"]) if proof else None
+        units = {row["unit"] for row in matched}
+        if witness is not None:
+            units.add(witness["unit"])
+        headers = {unit: dict(self._context(pid, unit) or {}) for unit in units}
+        syms = self.symbols(pid) if units else None
+        if witness is not None:
+            source = proof[1] or witness["matched_source"] or self._source_of(witness)
+            settings = compiler_for(proposed, witness["vram"])
+            if settings == compiler_for(current, witness["vram"]):
+                raise NetworkError("This change would keep the witness function on its current settings. Test a function it changes.")
+            if (not source or not self._judge_with(trial, witness, settings["toolchain"], settings["flags"], source)[0]):
+                raise NetworkError("The new settings could not reproduce the exact match. Test the latest source again.")
+        broken = self.regression_test(trial, None, only=matched,
+                                      header_for=lambda row: headers[row["unit"]].get("header", "")) if matched else []
+        if broken and not reopen:
             raise NetworkError(f"{len(broken)} matched function(s) wouldn't match with it any more "
-                               f"({', '.join(n for n, _ in broken[:5])})")
+                               f"({', '.join(name for name, _ in broken[:5])}).")
+        with self.store.tx() as db:
+            fresh = db.execute("SELECT root,config FROM projects WHERE id=?", (pid,)).fetchone()
+            config = json.loads(fresh["config"]) if fresh else {}
+            compile_inputs = ("compiler", "compiler_ranges", "gp", "big_endian", "rom", "segments")
+            changed = (not fresh or fresh["root"] != proj["root"]
+                       or any(config.get(name) != current.get(name) for name in compile_inputs)
+                       or (syms is not None and self._syms.get(pid) is not syms)
+                       or any(dict(self._context(pid, unit) or {}).get("version") != header.get("version")
+                              for unit, header in headers.items()))
+            if guard:
+                changed |= {tuple(row) for row in affected(db.execute(select, (pid,)))} != {
+                    tuple(row[name] for name in fields) for row in matched}
+            if witness is not None:
+                latest = db.execute("SELECT * FROM functions WHERE id=?", (witness["id"],)).fetchone()
+                changed |= not latest or any(latest[name] != witness[name] for name in fields)
+            if changed:
+                raise NetworkError("The project changed during the compiler check. Test the updated project again.")
+            config[key] = value
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(config), pid))
+            if key == "compiler":
+                db.execute("UPDATE functions SET seed=NULL WHERE project_id=? AND status='open'", (pid,))
+            if proof:
+                detail += f". Exact match checked on {witness['name']}"
+            self._event(db, pid, agent.id if agent else None, "compiler", f"{detail}. {reason}".rstrip(". "))
+        return broken

@@ -114,11 +114,11 @@ const settle = async () => { for (let i = 0; i < SETTLE_TICKS; i++) await tick()
   const t = Date.now() / 1000;
   const news = Array.from({ length: 13 }, (_, i) => ({ id: 61 + i, kind: "match", detail: `func_${100 + i}`, agent: "gemini-3.8-flash-2",
     created_at: t + i, slug: "b", project: "Ridge Racer V" }));
-  news.push({ id: 74, kind: "paused", detail: "the provider is out of credit", agent: "claude-1", created_at: t + 13, slug: "a", project: "Demo Quest 64" });
+  news.push({ id: 74, kind: "needs-setup", detail: "Add provider credit, then press Start again.", agent: "claude-1", created_at: t + 13, slug: "a", project: "Demo Quest 64" });
   feed = feed.concat(news);
   await ctx.pollEvents();
   await settle();
-  // one more match in the same burst: the same line counts up
+  // Additional matches appear in history without prompting the user.
   feed.push({ id: 75, kind: "match", detail: "func_200", agent: "claude-2", created_at: t + 14, slug: "b", project: "Ridge Racer V" });
   await ctx.pollEvents();
   await settle();

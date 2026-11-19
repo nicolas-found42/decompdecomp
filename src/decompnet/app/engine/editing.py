@@ -4,6 +4,7 @@ reports, and what the user steers (instructions, title, priorities).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -15,7 +16,8 @@ from .common import _ADDRESS
 
 
 class EditMixin:
-    def split_function(self, agent: Agent, project: str | None, function: str, at: str, new_name: str = "") -> str:
+    def split_function(self, agent: Agent, project: str | None, function: str, at: str, new_name: str = "",
+                       *, checked: bool = False) -> str:
         self._rom_only(project, "split_function")
         link = self._link(project)
         if link is not None:
@@ -47,9 +49,9 @@ class EditMixin:
             limit = min(following) if following else fn["vram"] - (fn["rom_offset"] or 0) + len(rom)
             new = console.function_at(rom, addr, limit, new_name)
             if new is not None:
-                return self._add_function(proj, fn, new, syms, agent.id, new_name)
+                return self._add_function(proj, fn, new, syms, agent.id, new_name, checked=checked)
         head, tail, head_padding, tail_padding = self._cut(proj, fn, addr, new_name, syms, agent.id, "split",
-                                                            f"{fn['name']} / {new_name}")
+                                                            f"{fn['name']} / {new_name}", checked=checked)
         if head_padding and tail_padding:
             cont = "Both halves were pure alignment padding and are set aside; there is nothing to continue with."
         elif head_padding:
@@ -63,13 +65,23 @@ class EditMixin:
         return (f"✅ split: {fn['name']} is now {console.function_insns(head)} instructions; {new_name} at "
                 f"0x{addr:08X} has {console.function_insns(tail)}. {cont}")
 
-    def _add_function(self, proj, prev, new, syms: SymbolTable, agent_id: int | None, new_name: str) -> str:
+    def _add_function(self, proj, prev, new, syms: SymbolTable, agent_id: int | None, new_name: str,
+                      *, checked: bool = False) -> str:
         """Add a function the splitter missed after `prev`; it starts at its own address and mode."""
         console = self.console(proj)
-        syms.add(Symbol(new_name, new.vram, new.size, "func"))
-        target = self._make_target(proj, new, syms)
+        trial = syms.copy() if checked else syms
+        trial.add(Symbol(new_name, new.vram, new.size, "func"))
+        target = self._make_target(proj, new, trial)
         meta = console.function_meta(new)
+        if checked:
+            snapshot = self._check_boundary_matches(proj, trial)
         with self.store.tx() as db:
+            if checked:
+                self._record_boundary(db, proj, prev, syms, None, snapshot)
+                if db.execute("SELECT 1 FROM functions WHERE project_id=? AND COALESCE(unit,'')=COALESCE(?,'') "
+                              "AND vram<? AND vram+size>? LIMIT 1",
+                              (proj["id"], prev["unit"], new.vram + new.size, new.vram)).fetchone():
+                    raise NetworkError("The new function overlaps a function already tracked by this project.")
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,"
                        "status,meta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        (proj["id"], new_name, new.size, console.function_insns(new), target.code,
@@ -79,11 +91,13 @@ class EditMixin:
                        (proj["id"], new_name, new.vram, new.size, "func"))
             self._event(db, proj["id"], agent_id, "split", f"{prev['name']} / {new_name}")
         self._xrefs.pop(proj["id"], None)
+        if checked:
+            self._syms.pop(proj["id"], None)
         self._ops.pop(proj["id"], None)
         return f"✅ new function {new_name} at 0x{new.vram:08X}, {new.size} bytes."
 
     def _cut(self, proj, fn, addr: int, new_name: str, syms: SymbolTable, agent_id: int | None, kind: str, detail: str,
-             tail_meta: dict | None = None):
+             tail_meta: dict | None = None, *, boundary: dict | None = None, checked: bool = False):
         """Cut a function in two at `addr`: the head keeps its row, the tail becomes `new_name` (status 'asm'
         with `tail_meta` when it isn't code agents should work on). Returns (head, tail, head_padding, tail_padding),
         where each `*_padding` flag says whether that side trimmed down to pure alignment padding and was retired
@@ -93,22 +107,33 @@ class EditMixin:
             head, tail = console.split_function(fn, addr, new_name)
         except ValueError as e:
             raise NetworkError(str(e)) from None
-        syms.add(Symbol(new_name, addr, tail.size, "func"))
-        old = syms.by_name.get(fn["name"])
+        checked = checked or boundary is not None
+        trial = syms.copy() if checked else syms
+        trial.add(Symbol(new_name, addr, tail.size, "func"))
+        old = trial.by_name.get(fn["name"])
         if old is not None:
             old.size = head.size
-        th, tt = self._make_target(proj, head, syms), self._make_target(proj, tail, syms)
+        th, tt = self._make_target(proj, head, trial), self._make_target(proj, tail, trial)
+        if checked:
+            if th.code + tt.code != fn["target"] or head.size != addr - fn["vram"]:
+                raise NetworkError("The proposed boundary leaves bytes unaccounted for. Check where the extra bytes begin.")
+            if console.ends_in_delay_branch(th.code, fn):
+                raise NetworkError("The instruction before this boundary still uses the next instruction. Move the boundary.")
+            snapshot = self._check_boundary_matches(proj, trial)
         with self.store.tx() as db:
+            if checked:
+                self._record_boundary(db, proj, fn, syms, boundary, snapshot)
             # The head's extent changed, so its old best attempt no longer describes it (reset seed/best, not just
             # the score). A side trimmed down to pure alignment padding (the processor's nop/filler) is not a
             # function to match — mark it done ('asm'), with an alignment-padding reason for its page, so it leaves
             # the open pool instead of lingering as an open sliver. Both halves are checked: splitting leading
             # padding off a function can leave a padding head, and splitting into trailing padding leaves a padding
             # tail. The console asks the right reader for the function's mode (GBA: ARM vs Thumb).
-            head_padding = bool(head.size) and console.is_padding(th.code, fn)
+            head_padding = not checked and bool(head.size) and console.is_padding(th.code, fn)
             # a tail that starts in the head's branch delay slot is not padding: that first word belongs to the
             # head, so don't retire the tail even when its bytes are all the processor's nop.
-            tail_padding = (bool(tail.size) and console.is_padding(tt.code, fn)
+            tail_padding = ((not checked or (boundary and boundary["tail"] == "padding"))
+                            and bool(tail.size) and console.is_padding(tt.code, fn)
                             and not console.ends_in_delay_branch(th.code, fn))
             meta = console.function_meta(tail)
             if tail_meta:
@@ -140,18 +165,61 @@ class EditMixin:
                        (proj["id"], new_name, addr, tail.size, "func"))
             self._event(db, proj["id"], agent_id, kind, detail)
         self._xrefs.pop(proj["id"], None)
+        if checked:
+            self._syms.pop(proj["id"], None)
+        self._ops.pop(proj["id"], None)
         return head, tail, head_padding, tail_padding
 
-    def request_boundary(self, agent: Agent, slug: str, function: str, end: str, reason: str) -> str:
-        """An agent's report that a function really ends earlier: what follows is alignment padding, linker leftovers
-        or data, not code anyone wrote. Changing the function list is the user's call, so it waits for them on the
-        project page (resolve_boundary); approved, the function is cut there and the rest set aside. A project
-        decompdecomp made (PC) cuts it once agents agree instead (ForkEngine.report_boundary)."""
+    def _check_boundary_matches(self, proj, trial):
+        """Test the effect of the proposed symbol table without publishing it to other agents."""
+        pid = proj["id"]
+        matched = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", pid)
+        units = {fn["unit"] for fn in matched}
+        headers = {unit: dict(self._context(pid, unit) or {}) for unit in units}
+        broken = self.regression_test(proj, None, only=matched, header_for=lambda fn: headers[fn["unit"]].get("header", ""),
+                                      scope=lambda: self._using_symbols(pid, trial))
+        if broken:
+            raise NetworkError(f"The boundary would break the existing match for {broken[0][0]}.")
+        return matched, headers
+
+    def _record_boundary(self, db, proj, fn, syms, boundary, snapshot):
+        """Recheck the inputs and commit the decision in the same transaction as the cut."""
+        pid = proj["id"]
+        matched, headers = snapshot
+        current = db.execute("SELECT * FROM functions WHERE id=?", (fn["id"],)).fetchone()
+        fresh = db.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
+        fields = ("name", "status", "target", "relocs", "vram", "rom_offset", "size", "meta")
+        compile_inputs = ("compiler", "compiler_ranges", "gp", "big_endian", "rom", "segments")
+        saved = db.execute("SELECT * FROM functions WHERE project_id=? AND status='matched'", (pid,)).fetchall()
+        cfg = json.loads(fresh["config"]) if fresh else {}
+        checked = next((row for row in cfg.get("boundaries", []) if boundary and row["id"] == boundary["id"]), None)
+        if (not current or not fresh or any(current[f] != fn[f] for f in fields) or fresh["root"] != proj["root"]
+                or any(self.cfg(fresh).get(key) != self.cfg(proj).get(key) for key in compile_inputs)
+                or self._syms.get(pid) is not syms or {tuple(r) for r in matched} != {tuple(r) for r in saved}
+                or any(dict(self._context(pid, unit) or {}).get("version") != header.get("version")
+                       for unit, header in headers.items())
+                or checked != boundary):
+            raise NetworkError("The project changed while checking this boundary. Read the function again and retry.")
+        if checked:
+            if checked["tail"] != "function" and db.execute(
+                    "SELECT 1 FROM functions AS f, json_each(f.relocs) AS ref WHERE f.project_id=? "
+                    "AND (f.id!=? OR json_extract(ref.value,'$[0]')<?) "
+                    "AND json_extract(ref.value,'$[2]')>=? AND json_extract(ref.value,'$[2]')<? LIMIT 1",
+                    (pid, fn["id"], checked["end"] - fn["vram"], checked["end"], fn["vram"] + fn["size"])).fetchone():
+                raise NetworkError("Recorded code still references bytes after that boundary. Check what follows the function.")
+            checked.update(status="applied", decided_at=time.time())
+            for other in cfg["boundaries"]:
+                if other["status"] == "open" and other.get("function_id") == fn["id"]:
+                    other.update(status="superseded", decided_at=time.time())
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), pid))
+
+    def request_boundary(self, agent: Agent, slug: str, function: str, end: str, reason: str, tail: str = "") -> str:
+        """Require independent agreement about where the function ends, then check bytes and matches."""
+        if link := self._link(slug):
+            return link.call("/collab/boundary", agent, function=function, end=end, reason=reason, tail=tail)
         if (fork := self.fork_slug(slug)):
             return self.forks.report_boundary(agent, fork, function, end, reason)
         self._rom_only(slug, "report_boundary")
-        if self._link(slug) is not None:
-            raise NetworkError("in a team room the host's project decides where functions end: tell the host (add_note)")
         fn = self._function(function, slug)
         proj = self._project(slug)
         console = self.console(proj)
@@ -172,19 +240,58 @@ class EditMixin:
         reason = " ".join(reason.split())[:600]
         if not reason:
             raise NetworkError("say what the bytes after it are (padding, linker leftovers, data) and how you can tell")
+        code = fn["target"] or b""
+        if len(code) != fn["size"]:
+            raise NetworkError("Read the function again. The project has no complete byte range to check.")
+        padding = bool(fn["asm"]) and console.is_padding(code[off:], fn)
+        if console.ends_in_delay_branch(code[:off], fn):
+            raise NetworkError("The instruction before this boundary still uses the next instruction. Move the boundary.")
+        if tail not in ("", "padding", "data", "function"):
+            raise NetworkError("Choose padding, data, or function for the bytes after the boundary.")
+        tail = tail or ("padding" if padding else "data")
+        if tail == "padding" and not padding:
+            raise NetworkError("These bytes do not pass the padding check. Explain what follows the boundary.")
+        if tail != "function" and any(addr <= target < fn["vram"] + fn["size"]
+                                      for target in console.branch_targets(code[:off], fn)):
+            raise NetworkError("This function still branches past that boundary. Check where the live code ends.")
+        digest = hashlib.sha256(code).hexdigest()
+        model = self.knowledge.model_of(agent)
         order = "big" if proj["big_endian"] else "little"
         rest = " ".join(f"{int.from_bytes(fn['target'][at:at + size], order):0{2 * size}X}"
                         for at in range(off, min(fn["size"], off + 32), size))
 
         def change(cfg):
             items = cfg.setdefault("boundaries", [])
-            items[:] = [r for r in items if not (r["status"] == "open" and r["function"] == fn["name"])]
-            items.append({"id": max((r["id"] for r in items), default=0) + 1, "function": fn["name"], "vram": fn["vram"],
-                          "end": addr, "cut": fn["size"] - off, "rest": rest, "reason": reason, "agent": agent.name,
-                          "t": time.time(), "status": "open"})
-        self._update_cfg(slug, change)
-        return (f"Reported: {fn['name']} ends at 0x{addr:08X} ({fn['size'] - off} bytes after it set aside if the user "
-                f"approves). Until then it stays as it is; release it or work on with its current size.")
+            report = next((r for r in items if (r.get("function_id"), r["end"], r.get("tail"), r.get("digest"))
+                           == (fn["id"], addr, tail, digest) and r["status"] == "open"), None)
+            if report is None:
+                report = {"id": max((r["id"] for r in items), default=0) + 1, "function": fn["name"],
+                          "function_id": fn["id"], "vram": fn["vram"], "end": addr, "cut": fn["size"] - off,
+                          "rest": rest, "reason": reason, "agent": agent.name, "tail": tail, "digest": digest,
+                          "t": time.time(), "status": "open", "support": {}}
+                items.append(report)
+            report["support"][agent.name] = {"model": model, "reason": reason}
+            return report
+
+        with self.store.tx() as db:
+            cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()[0])
+            report = change(cfg)
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+        if len({vote["model"] for vote in report["support"].values()}) < 2:
+            return f"Reported boundary #{report['id']}. A second model must check the {tail} after it. Meanwhile, release it or continue."
+        if not fn["asm"]:
+            raise NetworkError("This function is missing its original instructions. Run Check again before changing its boundary.")
+        if tail != "function" and not console.ends_with_return(code[:off], fn):
+            return (f"Reported boundary #{report['id']}. The app couldn't verify a return before the {tail}. "
+                    "The current function stays open.")
+        new_name = f"{'func' if tail == 'function' else 'pad'}_{addr:08X}"
+        syms = self.symbols(proj["id"])
+        if new_name in syms.by_name:
+            raise NetworkError(f"{new_name} already exists. Check the functions at the proposed boundary.")
+        explanation = f"{fn['name']} ends at 0x{addr:08X}. Kept the remaining bytes as {tail}. {reason}"
+        tail_meta = None if tail == "function" else {"asm_code": f"{tail} after {fn['name']}: {reason}"}
+        self._cut(proj, fn, addr, new_name, syms, agent.id, "boundary", explanation, tail_meta, boundary=report)
+        return f"✅ {explanation} Existing matches still pass."
 
     def resolve_boundary(self, slug: str, rid: int, apply: bool) -> None:
         """The user's answer to a boundary report: cut the function there (the rest set aside as not code) or dismiss."""

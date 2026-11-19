@@ -397,3 +397,24 @@ def ends_in_delay_branch(code: bytes, big_endian: bool) -> bool:
         return False
     order = "big" if big_endian else "little"
     return bool(rabbitizer.Instruction(int.from_bytes(code[-4:], order)).hasDelaySlot())
+
+
+def ends_with_return(code: bytes, big_endian: bool) -> bool:
+    """A return jump and its complete delay slot."""
+    return len(code) >= 8 and int.from_bytes(code[-8:-4], "big" if big_endian else "little") == JR_RA
+
+
+def branch_targets(code: bytes, start: int, big_endian: bool, variant: str):
+    """Read relative and absolute destinations, including PSP-specific branches."""
+    import rabbitizer
+
+    order = "big" if big_endian else "little"
+    category = rabbitizer.InstrCategory.R4000ALLEGREX if variant == ALLEGREX else rabbitizer.InstrCategory.CPU
+    for offset in range(0, len(code) - 3, 4):
+        address = start + offset
+        word = int.from_bytes(code[offset:offset + 4], order)
+        insn = rabbitizer.Instruction(word, address, category)
+        if insn.isBranch():
+            yield address + insn.getBranchOffsetGeneric()
+        elif insn.isJumpWithAddress():
+            yield jump_target(word, address + 4)

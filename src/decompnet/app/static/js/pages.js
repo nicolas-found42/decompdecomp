@@ -45,11 +45,12 @@ function renderAgentsPage() {
       <div class="row"><button class="primary small-btn" data-save type="button">${e.id ? "Save" : "Add"}</button>
         ${e.has_key ? `<button class="ghost small-btn" data-forget type="button">Forget the key</button>` : ""}
         ${e.id ? `<button class="ghost small-btn danger" data-remove type="button">Remove</button>` : eps.length ? `<button class="ghost small-btn" data-cancel type="button">Cancel</button>` : ""}</div></div>`;
-  $("apiBox").innerHTML = `<p class="muted small">Any OpenAI-compatible API runs through decompdecomp's built-in agent loop: DeepSeek, OpenRouter, OpenAI, or models on your own machines with llama.cpp, Ollama or LM Studio. Save one endpoint per machine or provider: when you start agents you tick the ones to use, and the sessions are spread across them. Each key stays on this computer and is only sent to its own endpoint.</p>
+  $("apiBox").innerHTML = `<p class="muted small">The built-in helper can use an AI service or a model running on your computer. Add its connection details here, then choose it when you start helpers. The key signs the helper in to that service.</p>
     ${eps.map(card).join("")}
     <div id="epNew" ${eps.length && !S.addingEndpoint ? "hidden" : ""}>${card({ provider: "custom" })}</div>
     ${eps.length && !S.addingEndpoint ? `<div class="row"><button class="ghost small-btn" id="epAdd" type="button">Add an endpoint</button></div>` : ""}
-    <p class="muted small">Context size, for a local model: what you started it with (found by itself from llama.cpp). The agent keeps its conversation within it. Give it at least 16384 (llama.cpp: <code>-c 16384</code>; Ollama: <code>OLLAMA_CONTEXT_LENGTH=16384</code>, or it quietly cuts the start off). Sessions at once: for a machine that serves one request at a time, 1.</p>`;
+    <details class="more"><summary>Advanced setup for models on your computer</summary>
+      <p class="muted small">Context size is how much of the current task the model can keep in view. Use the size you started the model with. For 16,384 tokens, set <code>-c 16384</code> in llama.cpp or <code>OLLAMA_CONTEXT_LENGTH=16384</code> in Ollama. Set sessions at once to 1 for a computer that handles one request at a time.</p></details>`;
   wireEndpointFields($("apiBox"));
   const post = async (body, said) => {
     try {
@@ -215,7 +216,7 @@ function renderTools() {
   const rows = all.filter((t) => !toolFilter || group(t) === toolFilter);
   const vm = S.st.linux_vm;
   const vmCard = vm && (!toolFilter || rows.some((t) => t.linux_vm)) ? `<div class="tool-card ${vm.ready ? "ok" : ""}"><div class="tc-top"><b>${S.st.ish_runner ? "Apple Silicon compiler runner" : "Local Linux compiler runner"}</b><span class="chip-s">macOS</span></div>
-    <p class="muted small">${S.st.ish_runner ? "Runs original Sony compilers locally through iSH." : "Runs Linux-only compiler packs in a dedicated Colima VM. Compiles stay local and have no network access."}</p>
+    <p class="muted small">${S.st.ish_runner ? "Lets an Apple Silicon Mac run original Sony compilers through iSH." : "Lets your Mac run compilers built for Linux. Your code is compiled on this computer."}</p>
     <p class="small">${vm.ready ? "✓ Ready" : esc(vm.why)}</p>
     <button class="ghost small-btn" id="prepareLinuxVm" type="button">${vm.ready ? (S.st.ish_runner ? "Check iSH runner" : "Check Linux runner") : "Prepare Linux runner"}</button></div>` : "";
   $("toolGrid").innerHTML = vmCard + rows.map((t) => `<div class="tool-card ${t.installed ? "ok" : ""}">
@@ -305,9 +306,9 @@ async function showSettingsPage() {
   show("settingsPage");
   const st = await loadState();
   $("setAgents").innerHTML = `
-    <label class="field"><span>Functions per agent session (a fresh session keeps the agent's context small)</span><input id="perSession" type="number" min="1" max="20" value="${st.settings.per_session}"></label>
-    <label class="field"><span>Budget: stop helper agents when a project's agents have spent this much (US dollars, as the agents report it; 0 = no limit)</span><input id="budgetSet" type="number" min="0" step="0.5" value="${st.settings.budget_usd || 0}"></label>
-    <label class="check"><input type="checkbox" id="autopilotSet" ${st.settings.autopilot !== false ? "checked" : ""}><span><b>Autopilot after each import</b>: try every function's machine draft first, so free matches cost no agent time.</span></label>`;
+    <label class="field"><span>Project spending limit (US dollars)</span><input id="budgetSet" type="number" min="0" step="0.5" value="${st.settings.budget_usd || 0}"><small class="muted">The app stops built-in helpers when their reported cost reaches this amount. Enter 0 for no limit.</small></label>
+    <label class="check"><input type="checkbox" id="autopilotSet" ${st.settings.autopilot !== false ? "checked" : ""}><span><b>Run Autopilot on new projects.</b> The app tries its own drafts first. This uses your computer without spending on AI requests.</span></label>
+    <details class="more"><summary>Advanced</summary><label class="field"><span>Functions per agent session</span><input id="perSession" type="number" min="1" max="20" value="${st.settings.per_session}"><small class="muted">Lower this to give a helper a fresh session more often.</small></label></details>`;
   const theme = savedTheme();
   $("setComputer").innerHTML = `
     <div class="field"><span>Appearance</span><div class="seg" id="themeSeg">${THEMES.map(([k, l]) => `<button type="button" data-theme="${k}" class="${theme === k ? "on" : ""}">${l}</button>`).join("")}</div></div>
@@ -534,10 +535,10 @@ async function refreshManualMcp() {
     if (read !== manualMcpRead) return;
     const port = new URL(info.url).port;
     disclosureContext('agMcpContext', `${info.connections.length} connection${info.connections.length === 1 ? '' : 's'} · local server`);
-    $("mcpStatus").innerHTML = `<p><b>Running locally</b> · ${esc(info.transport)} · Port ${esc(port)}</p>${cmdBox(info.url)}<p class="small muted">Local clients only (127.0.0.1). No public endpoint or OAuth sign-in. Choose a project to see its tools.</p>`;
+    $("mcpStatus").innerHTML = `<p><b>Ready for agents on this computer</b> · Port ${esc(port)}</p>${cmdBox(info.url)}<p class="small muted">Use this address in your AI tool. Choose a project to see what an agent can do there.</p>`;
     wireCopies($("mcpStatus"));
     $("mcpToolCount").textContent = `(${info.tools.length})`;
-    $("mcpTools").innerHTML = info.tools.map(t => `<details class="mcp-tool"><summary><code>${esc(t.name)}</code></summary><p>${esc(t.description || "")}</p><details><summary>Input schema</summary><pre class="joblog">${esc(JSON.stringify(t.inputSchema,null,2))}</pre></details></details>`).join("");
+    $("mcpTools").innerHTML = info.tools.map(t => `<details class="mcp-tool"><summary><code>${esc(t.name)}</code></summary><p>${esc(TOOL_HELP[t.name] || t.description || "")}</p><details><summary>Technical details</summary><p>${esc(t.description || "")}</p><pre class="joblog">${esc(JSON.stringify(t.inputSchema,null,2))}</pre></details></details>`).join("");
     $("mcpConnections").innerHTML = info.connections.length ? info.connections.map(c => `<div class="row mcp-connection"><code class="grow">${esc(c.name)} · ${esc(c.slug)}</code><button class="ghost small-btn" data-revoke-mcp="${c.id}" type="button">Revoke</button></div>`).join("") : `<p class="muted small">No manual connections yet.</p>`;
     $("mcpConnections").querySelectorAll("[data-revoke-mcp]").forEach(button => { button.onclick = async () => {
       button.disabled = true;

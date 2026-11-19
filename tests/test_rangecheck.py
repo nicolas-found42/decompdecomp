@@ -122,7 +122,8 @@ class FakeNet:
     def _short(self, label):
         return label[0]
 
-    def set_compiler_ranges(self, slug, ranges, toolchain, flags):
+    def set_compiler_ranges(self, slug, ranges, toolchain, flags, *, proof=None, reason=""):
+        assert proof and reason
         self.applied.append((ranges, toolchain))
 
 

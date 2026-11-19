@@ -77,6 +77,67 @@ def test_a_boundary_report_after_two_refusals_still_releases_it(tmp_path):
     assert _held(net, a) is None
 
 
+@pytest.mark.parametrize(("tail_type", "tail_name", "status"),
+                         [("padding", "pad_80001008", "asm"), ("function", "func_80001008", "open")])
+def test_helpers_check_the_boundary_and_existing_matches_before_cutting(tmp_path, monkeypatch,
+                                                                       tail_type, tail_name, status):
+    from decompnet.app.tools import call
+
+    net, pid = _game(tmp_path, [("f", 3, "open"), ("checked", 2, "matched")])
+    start = 0x80001000
+    code = bytes.fromhex("03e00008 00000000 00000000")
+    assembly = ("glabel f\n/* 1000 80001000 03E00008 */ jr $ra\n"
+                "/* 1004 80001004 00000000 */ nop\n/* 1008 80001008 00000000 */ nop\nendlabel f")
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET arch='mips', config=? WHERE id=?",
+                   (json.dumps({"kind": "rom", "platform": "n64", "big_endian": True}), pid))
+        db.execute("UPDATE functions SET vram=?,rom_offset=4096,target=?,asm=?,relocs='[]' WHERE name='f'",
+                   (start, code, assembly))
+    a, _ = net.local_agent("claude-sonnet-5-1")
+    b, _ = net.local_agent("claude-sonnet-5-2")
+    c, _ = net.local_agent("codex-gpt-5-1")
+    args = {"function": "f", "end": "0x80001008", "reason": "One alignment NOP after the return delay slot.",
+            "tail": "padding"}
+    assert "still uses the next instruction" in call(net, a, "game", "report_boundary", args | {"end": "0x80001004"})
+    assert "second model" in call(net, a, "game", "report_boundary", args)
+    assert "second model" in call(net, b, "game", "report_boundary", args)
+
+    # A conditional transfer can enter the tail even when the instruction before it is a return.
+    branch = bytes.fromhex("10000002 03e00008 00000000 00000000")
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET target=?,size=16 WHERE name='f'", (branch,))
+    assert "still branches" in call(net, c, "game", "report_boundary", args | {"end": "0x8000100C"})
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET target=?,size=12 WHERE name='f'", (bytes(12),))
+    assert "second model" in call(net, a, "game", "report_boundary", args)
+    assert "couldn't verify a return" in call(net, c, "game", "report_boundary", args)
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET target=? WHERE name='f'", (code,))
+
+    def regress(*a, only, **kw):
+        assert [row["name"] for row in only] == ["checked"]
+        return [("checked", "changed")]
+
+    with monkeypatch.context() as failing:
+        failing.setattr(net, "regression_test", regress)
+        assert "break the existing match" in call(net, c, "game", "report_boundary", args)
+        assert net._function("f", "game")["target"] == code
+    monkeypatch.setattr(net, "regression_test", lambda *a, **kw: [])
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET relocs=? WHERE name='checked'", (json.dumps([[0, 4, start + 8]]),))
+    assert "still references bytes" in call(net, c, "game", "report_boundary", args)
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET relocs='[]' WHERE name='checked'")
+    chosen = args | {"tail": tail_type}
+    if tail_type == "function":
+        assert "second model" in call(net, a, "game", "report_boundary", chosen)
+    assert "Existing matches still pass" in call(net, c, "game", "report_boundary", chosen)
+    head, tail = (net._function(name, "game") for name in ("f", tail_name))
+    assert head["target"] + tail["target"] == code
+    assert tail["status"] == status
+    assert len(net.decision_history("game")) == 1
+
+
 def test_a_session_of_refused_releases_made_no_progress(tmp_path, monkeypatch):
     # so it fails like any session that compiled nothing: a pause between them, and after a few the helper stops
     # with the reason for the user, instead of a new session on the same function 3 s later

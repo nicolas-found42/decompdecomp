@@ -103,14 +103,22 @@ function renderSteering(ov) {
   $("saveAbout").hidden = ov.kind === "fork";
   $("saveAboutFork").hidden = ov.kind !== "fork";
   renderKnowledge();
-  // what agents can't change themselves: where a function ends, and suggestions; a compiler's are in Settings → Compiler
-  const sg = (ov.suggestions || []).filter((s) => !s.toolchain), bd = ov.boundaries || [];
-  $("suggestPanel").hidden = !sg.length && !bd.length;
-  setHtml($("suggestList"), bd.map((r) => `<div class="note">${saidHead("where a function ends", [r.agent], r.t, true)}
-    <b class="mono">${esc(r.function)}</b> ends at <span class="mono">${hex8(r.end)}</span>: the ${r.cut} bytes after it aren't code. ${esc(r.reason)}
-    <p class="small muted mono">after ${hex8(r.end)}: ${esc(r.rest)}</p>
-    <div class="row"><button class="primary small-btn" type="button" data-bapply="${r.id}">Cut it there</button><button class="ghost small-btn" type="button" data-bdismiss="${r.id}">Dismiss</button></div></div>`).join("") + sg.map(suggestionHtml).join(""));
+  renderDecisions(ov);
   if (S.tab === "settings") renderCompilerWaiting(ov);
+}
+
+function renderDecisions(ov) {
+  const sg = ov.suggestions || [], bd = ov.boundaries || [];
+  const recent = S.decisionLast?.slug === S.slug ? S.decisionLast.items : [];
+  const topics = {"sdk-review":"SDK names", compiler:"Compiler settings", boundary:"Function boundary", knowledge:"Shared finding"};
+  $("suggestPanel").hidden = !sg.length && !bd.length && !recent.length;
+  setHtml($("suggestList"), recent.map(item => `<details class="more"><summary>${esc(topics[item.kind])} · ${item.agent ? esc(item.agent) : "App check"}</summary>
+    <p>${esc(item.detail)}</p><p class="muted small">${clock(item.created_at)}</p></details>`).join("")
+    + (sg.length || bd.length ? '<h3>Still being checked</h3>' : "")
+    + bd.map(r => `<details class="more"><summary>Where ${esc(r.function)} ends</summary>
+    ${saidHead("", [r.agent], r.t, true)}<p>${esc(r.reason)}</p>
+    <p class="muted small">${r.cut} bytes after ${hex8(r.end)} · ${esc(r.rest)}</p></details>`).join("")
+    + sg.map(suggestionHtml).join(""));
 }
 /* What agents said, for the user to read (suggestions, what they learned): a status, who (as chips) and when on a
    line of their own, then what they said with its `code` and **bold**. It was one run of plain text, hard to tell
@@ -121,32 +129,9 @@ function saidHead(badge, agents, t, quiet = false) {
 const saidText = (text) => `<div class="said-text">${miniMarkdown(text)}</div>`;
 const tcName = (id) => (S.st?.toolchains || []).find((t) => t.id === id)?.name || id;
 function suggestionHtml(s) {
-  const ok = s.check && s.check.includes("matches the game");
-  return `<div class="note">${saidHead(s.agents.length > 1 ? `${s.agents.length} agents agree` : "suggested", s.agents, s.t, true)}${saidText(s.text)}
-    ${s.check ? `<p class="said-check${ok ? " ok" : ""}">${ok ? "✓ " : ""}${esc(s.check)}</p>` : ""}
-    <div class="row">${s.toolchain ? `<button class="primary small-btn" type="button" data-apply="${s.id}">Use ${esc(tcName(s.toolchain))} ${esc(s.flags.join(" "))}${(s.ranges || []).length ? ` for ${plural(s.ranges.length, "part")}` : ""}</button>` : ""}<button class="ghost small-btn" type="button" data-dismiss="${s.id}">${s.toolchain ? "Not now" : "Dismiss"}</button></div></div>`;
+  return `<details class="more"><summary>${s.toolchain ? "Checking " + esc(tcName(s.toolchain)) : "Agent suggestion"}</summary>
+    ${saidHead("", s.agents, s.t, true)}${saidText(s.text)}${s.check ? `<p class="small muted">${esc(s.check)}</p>` : ""}</details>`;
 }
-$("suggestList").onclick = $("compilerWaiting").onclick = async (e) => {
-  const cut = e.target.closest("button[data-bapply], button[data-bdismiss]");
-  if (cut) {
-    const apply = cut.dataset.bapply != null;
-    try {
-      S.ov = await api("/api/boundary", { method: "POST", body: { slug: S.slug, id: Number(cut.dataset.bapply || cut.dataset.bdismiss), action: apply ? "apply" : "dismiss" } });
-      renderStats(S.ov);
-      toast(apply ? "Cut. The rest is set aside as not code." : "Dismissed.");
-    } catch (err) { toast(esc(err.message), "err"); }
-    return;
-  }
-  const b = e.target.closest("button[data-apply], button[data-dismiss]");
-  if (!b) return;
-  const apply = b.dataset.apply != null;
-  try {
-    S.ov = await api("/api/suggestion", { method: "POST", body: { slug: S.slug, id: Number(b.dataset.apply || b.dataset.dismiss), action: apply ? "apply" : "dismiss" } });
-    renderStats(S.ov);
-    renderProjectSettings();
-    toast(apply ? "Applied. Agents compile with it from their next attempt on." : "Dismissed.");
-  } catch (err) { toast(esc(err.message), "err"); }
-};
 // a disc's title is often only its serial (GTA San Andreas imports as SLES-52541): the user names it
 $("phRename").onclick = () => {
   const body = dialog("Rename this project", `<label class="field"><span>Name</span><input id="renameText" maxlength="80" value="${esc(S.ov.title)}"></label>
@@ -169,40 +154,19 @@ $("phRename").onclick = () => {
 const KNOWLEDGE_EVERY_MS = 30000;
 async function renderKnowledge(force = false) {
   if (!force && S.knowAt && Date.now() - S.knowAt < KNOWLEDGE_EVERY_MS && S.knowSlug === S.slug) return;
-  S.knowAt = Date.now(); S.knowSlug = S.slug;
+  const slug = S.slug;
+  S.knowAt = Date.now(); S.knowSlug = slug;
   let k;
-  try { k = await api(`/api/knowledge?slug=${encodeURIComponent(S.slug)}`); } catch { return; }
-  $("knowAuto").checked = k.auto;
-  const row = (it) => {
-    if (it.status === "agreed") return `<div class="note">${saidHead("agreed · waiting for you", it.models, it.t)}${saidText(it.text)}
-      <div class="row"><button class="primary small-btn" data-know="${it.id}" data-accept="1" type="button">Give it to agents</button>
-      <button class="ghost small-btn" data-know="${it.id}" type="button">Reject</button></div></div>`;
-    if (it.status === "accepted") return `<div class="note">${saidHead("agents get this", it.models, it.t, true)}${saidText(it.text)}
-      <div class="row"><button class="ghost small-btn" data-know="${it.id}" type="button">Take it back</button></div></div>`;
-    // the user can be the second opinion: with helpers of one model only, nothing is ever agreed by two
-    return `<div class="note">${saidHead("waiting for a second model", it.models, it.t, true)}${saidText(it.text)}
-      <div class="row"><button class="ghost small-btn" data-know="${it.id}" data-accept="1" type="button">Give it to agents</button>
-      <button class="ghost small-btn" data-know="${it.id}" type="button">Reject</button></div></div>`;
-  };
-  const waiting = k.items.filter((it) => it.status === "agreed").length;
-  $("knowState").textContent = waiting ? `${waiting} waiting for you` : k.items.length ? "" : "nothing yet";
-  setHtml($("knowList"), k.items.map(row).join(""));
+  try { k = await api(`/api/knowledge?slug=${encodeURIComponent(slug)}`); } catch { return; }
+  if (S.slug !== slug) return;
+  S.decisionLast = {slug, items: k.decisions || []};
+  if (S.ov) renderDecisions(S.ov);
+  const waiting = k.items.filter(it => it.status !== "accepted").length;
+  $("knowState").textContent = waiting ? `${waiting} being checked` : k.items.length ? "" : "No findings yet";
+  setHtml($("knowList"), k.items.map(it => `<div class="note">${saidHead(
+    it.status === "accepted" ? "Shared with helpers" : "Waiting for another helper", it.models, it.t, true)}
+    ${saidText(it.text)}</div>`).join(""));
 }
-$("knowList").onclick = async (e) => {
-  const b = e.target.closest("[data-know]");
-  if (!b) return;
-  try {
-    await api("/api/knowledge", { method: "POST", body: { slug: S.slug, id: Number(b.dataset.know), accept: !!b.dataset.accept } });
-    renderKnowledge(true);
-  } catch (err) { toast(esc(err.message), "err"); }
-};
-$("knowAuto").onchange = async (e) => {
-  try {
-    await api("/api/knowledge", { method: "POST", body: { slug: S.slug, auto: e.target.checked } });
-    toast(e.target.checked ? "What two models agree on goes to agents by itself now." : "You decide what agents get.");
-    renderKnowledge(true);
-  } catch (err) { toast(esc(err.message), "err"); }
-};
 $("instrSave").onclick = async () => {
   try {
     S.ov = await api("/api/instructions", { method: "POST", body: { slug: S.slug, text: $("instrEdit").value } });
@@ -385,10 +349,9 @@ async function exportNow() {
 }
 
 /* ------------------------------------------------------------------ project settings */
-async function renderProjectSettings(keepRemoved = false) {
+async function renderProjectSettings() {
   const ov = S.ov;
   if (!ov) return;
-  if (!keepRemoved) S.removedParts = [];  // a Removed part stays only for the remove that made it, not the next redraw
   renderSaveLocation(ov);
   loadSdkLibraries(ov);
   $("agentBackgroundJobsRow").hidden = !ov.can_manage_background_jobs;
@@ -399,16 +362,10 @@ async function renderProjectSettings(keepRemoved = false) {
   // a fork's build sets its compilers, except where each source file has one (DS): then the same panel, with the
   // project's flags its build's and nothing for the ROM engine's survey to check
   $("compilerPanel").hidden = !(ov.compilers || []).length;
-  for (const id of ["setFlagsRow", "setTcReset", "autoAdjustRow", "compilerHow"]) $(id).hidden = fork;
-  $("setTcWhat").textContent = fork
-    ? "Every source file is built with this compiler, except the parts above. Saving one for the whole game, or for address ranges, keeps it only for the files whose matched functions still match with it."
-    : "Every function is built with this compiler and these flags. If almost nothing matches, the game was probably built with another compiler or flags.";
+  $("compilerHow").hidden = fork;
   if (!$("compilerPanel").hidden) {
     if (!S.st) await loadState();
-    fillCompilers($("setTc"), ov.compiler.toolchain, ov.platform, fork ? ov.compilers : null);
-    $("setFlags").value = ov.compiler.flags.join(" ");
     $("autoAdjust").checked = !!ov.auto_compiler;
-    $("setRanges").value = "";
     renderCompilerWaiting(ov);
     loadCompilerAnswer();
     loadCompilerComparison();
@@ -487,12 +444,11 @@ $("unanalysedGo").onclick = async () => {
     toast(S.ov.unanalysed ? "The new analysis didn't bring that code in: the project's feed says why." : "Analysed: its functions are in the project now.", S.ov.unanalysed ? "err" : undefined);
   } catch (err) { toast(esc(err.message), "err"); } finally { b.disabled = false; }
 };
-$("setTcReset").onclick = () => { $("setFlags").value = ""; };
 $("autoAdjust").onchange = async () => {
   const on = $("autoAdjust").checked;
   try {
     S.ov = await api("/api/compiler", { method: "POST", body: { slug: S.slug, auto: on } });
-    toast(on ? "This game's proven compiler suggestions now apply by themselves." : "This game's compiler suggestions wait for you.");
+    toast(on ? "The app will use verified compiler suggestions." : "Automatic compiler changes are paused. Agents can keep testing.");
   } catch (err) { $("autoAdjust").checked = !on; toast(esc(err.message), "err"); }
 };
 $("compilerParts").onclick = async (e) => {
@@ -505,7 +461,7 @@ $("compilerParts").onclick = async (e) => {
   const fn = e.target.closest("[data-compiler-function]");
   if (fn) { openFn(fn.dataset.compilerFunction); return; }
   const testDefault = e.target.closest("button[data-profile-test-default]");
-  if (testDefault) { await testProfileAsDefault(testDefault, testDefault.dataset.profileAction || "test"); return; }
+  if (testDefault) { await testProfileAsDefault(testDefault); return; }
   const stopProfile = e.target.closest("button[data-profile-stop]");
   if (stopProfile) {
     const group = compilerDisplayedGroups[Number(stopProfile.dataset.profileStop)];
@@ -519,78 +475,6 @@ $("compilerParts").onclick = async (e) => {
   }
   const profileButton = e.target.closest("button[data-profile-default]");
   if (profileButton) { await compareProfileWithDefault(profileButton); return; }
-  const undo = e.target.closest("button[data-revert]");
-  if (undo) {
-    const part = (S.removedParts || [])[Number(undo.dataset.revert)];
-    if (!part || part.slug !== S.slug) return;
-    undo.disabled = true;
-    try {
-      const r = await api("/api/compiler", { method: "POST", body: {
-        slug: S.slug, ranges: `${hexShort(part.start)}-${hex8(part.end)}`, toolchain: part.toolchain, flags: part.flags,
-      } });
-      S.removedParts = (S.removedParts || []).filter((p) => p !== part);
-      S.ov = r;
-      renderStats(S.ov);
-      renderProjectSettings();
-      const n = part.reopened || 0;
-      toast(n
-        ? `That range is built with ${esc(part.compiler)} again. ${n === 1 ? "The function" : `The ${plural(n, "function")}`} it had reopened ${n === 1 ? "stays" : "stay"} open: agents redo ${n === 1 ? "it" : "them"} with that compiler.`
-        : `That range is built with ${esc(part.compiler)} again.`);
-    } catch (err) { undo.disabled = false; toast(esc(err.message), "err"); }
-    return;
-  }
-  const b = e.target.closest("button[data-unrange]");
-  if (!b) return;
-  const [start, end] = b.dataset.unrange.split("-").map((n) => parseInt(n, 16));
-  const file = b.dataset.file || "";
-  const known = S.ov?.compiler_ranges || [];
-  const found = known.find((r) => r.start === start && r.end === end && (r.file || "") === file)
-    || known.find((r) => r.start === start && r.end === end);
-  const remove = (reopen) => api("/api/compiler", { method: "POST", body: { slug: S.slug, ranges: b.dataset.unrange, remove: true, reopen } });
-  try {
-    let r;
-    try {
-      r = await remove(false);
-    } catch (err) {  // matched functions need the range: the user may judge it a quirk and redo them
-      if (!/wouldn't match/.test(err.message) || !confirm(`${err.message.split(":")[0]}.\n\nRemove the range anyway and reopen them? Their C stays as their best attempt, and agents redo them with the game's compiler.`)) throw err;
-      r = await remove(true);
-    }
-    S.ov = r;
-    if (found) {
-      const reopened = Array.isArray(r.reopened) ? r.reopened.length : 0;
-      S.removedParts = (S.removedParts || []).filter((p) => p.slug !== S.slug || p.start !== start || p.end !== end || (p.file || "") !== file);
-      S.removedParts.push({ slug: S.slug, start, end, toolchain: found.toolchain, flags: found.flags || [],
-        compiler: found.name || found.compiler || found.toolchain, file: found.file || "", reopened });
-    }
-    renderStats(S.ov);
-    renderProjectSettings(true);
-    const n = found ? (Array.isArray(r.reopened) ? r.reopened.length : 0) : 0;
-    const puts = found ? " Revert below puts it back." : "";
-    toast(n
-      ? `That range is built with the project's compiler again.${puts} ${n === 1 ? "The function" : `The ${plural(n, "function")}`} it reopened ${n === 1 ? "stays" : "stay"} open for agents to redo with that compiler.`
-      : `That range is built with the project's compiler again.${puts}`);
-  } catch (err) { toast(esc(err.message), "err"); }
-};
-$("setTc").onchange = () => { $("setFlags").value = ""; };  // one compiler's flags aren't another's (-G8 vs -sdatathreshold): its defaults
-$("setTcSave").onclick = async () => {
-  const wholeProject = S.ov.kind === "fork" && !$("setRanges").value.trim();
-  const finish = wholeProject ? beginWork($("setTcLog"), "Changing project compiler", [$("setTcSave")], "Project compiler change finished.") : () => {};
-  $("setTcSave").disabled = true;
-  if (wholeProject) showJobError($("setTcLog"), "");
-  try {
-    const flags = $("setFlags").value.trim();
-    const r = await api("/api/compiler", { method: "POST", body: { slug: S.slug, toolchain: $("setTc").value, flags: flags ? flags.split(/\s+/) : null, ranges: $("setRanges").value.trim() } });
-    let said = r.said || "Compiler settings saved.";
-    if (r.job) {  // the whole game, where each source file has a compiler: every file is tried in turn
-      $("setTcLog").hidden = false;
-      const res = await followJob(r.job, $("setTcLog"));
-      said = `${plural(res.switched, "source file")} built with it now${res.stayed.length ? `; ${plural(res.stayed.length, "file")} kept theirs (their matches need it)` : ""}.`;
-      S.ov = await api(`/api/project?slug=${S.slug}`);
-    } else S.ov = r;
-    renderStats(S.ov);
-    renderProjectSettings();
-    toast(esc(said));
-  } catch (e) { if (wholeProject) showJobError($("setTcLog"), e.message); else toast(esc(e.message), "err"); } finally { finish(); $("setTcSave").disabled = false; }
 };
 $("folderBtn").onclick = () => openFolder();
 $("reimportBtn").onclick = async () => {
@@ -754,19 +638,18 @@ function profileFailureGroups(failures) {
   return [...groups].map(([key, rows]) => `<details class="panel settings-disclosure profile-failure-group" open><summary class="panel-head"><h3>${esc(titles[key] || key)} <span class="disclosure-context">— ${rows.length}</span></h3></summary><div class="profile-failure-body"><div class="profile-failure-cards">${rows.map(f => `<article class="profile-failure-card"><div class="profile-failure-heading">${link(f.function)}</div><p class="small muted">${esc(f.reason)}</p></article>`).join('')}</div></div></details>`).join('');
 }
 
-async function testProfileAsDefault(button, action="test") {
+async function testProfileAsDefault(button) {
   const group = compilerDisplayedGroups[Number(button.dataset.profileTestDefault)], part = group?.parts[0];
   if (!part || group.default) return;
   const slug = S.slug;
   const profile = {toolchain:part.toolchain, flags:part.flag_list || part.flags.split(/\s+/).filter(Boolean)};
-  const replacing=action==='replace', nonmatches=action==='nonmatches';
-  const body = dialog(replacing ? 'Replace project default compiler' : nonmatches ? 'Test all non-matches' : 'Test compiler profile as default', `<p class="profile-test-intro">${replacing ? 'Check compatibility and replace the project default.' : nonmatches ? 'Find exact matches for currently unmatched functions.' : 'Check whether this profile preserves matches using the project default.'}</p>
-    <div class="profile-test-selection"><span class="small muted">Compiler to test</span><strong>${esc(group.compiler)}</strong><code class="compiler-arguments">${esc(profile.flags.join(' '))}</code></div>
-    <p class="small muted">${replacing ? 'Make this profile the default. Existing matches that need the previous default keep it as a non-default override. Other profiles keep their settings. Saved attempts are rescored before settings are saved.' : nonmatches ? 'Includes all compiler profiles. Testing changes nothing; apply verified matches afterward. Ready functions are tested while others load. Functions without saved C are reported.' : 'Test only. Compiler settings, ranges and saved matches stay unchanged. Functions using other profiles are excluded.'}</p>
-    <section class="default-profile-test" aria-label="Compiler profile test progress"><div class="profile-test-heading"><p data-default-status role="status">${nonmatches ? 'Preparing non-matching functions…' : 'Preparing default-profile matches…'}</p><span class="small muted" data-default-count></span><button class="ghost small-btn" type="button" data-default-stop hidden>Stop</button></div>
+  const body = dialog("Test this as the default compiler", `<p class="profile-test-intro">Check whether this compiler can rebuild functions that already match.</p>
+    <div class="profile-test-selection"><strong>${esc(group.compiler)}</strong><code class="compiler-arguments">${esc(profile.flags.join(' '))}</code></div>
+    <p class="small muted">This test checks functions using the current default. The results help agents choose settings.</p>
+    <section class="default-profile-test" aria-label="Compiler profile test progress"><div class="profile-test-heading"><p data-default-status role="status">Preparing functions to check…</p><span class="small muted" data-default-count></span><button class="ghost small-btn" type="button" data-default-stop hidden>Stop</button></div>
     <div data-default-work></div><progress class="deep-sweep-bar" data-default-bar hidden max="1" aria-label="Functions checked"></progress><p class="small muted profile-test-current" data-default-function></p>
     <dl class="default-profile-counts"><div><dt>Passed</dt><dd class="ok" data-default-passed>0</dd></div><div><dt>Did not pass</dt><dd data-default-failed>0</dd></div><div><dt>Remaining</dt><dd data-default-left>—</dd></div></dl></section>
-    <p class="err-msg" data-default-error role="alert" hidden></p><p class="profile-test-verdict" data-default-verdict></p><div data-apply-matches hidden><button type="button" class="primary" data-apply-matches-button>Apply verified matches</button><p class="small muted">Rechecks the saved C, assigns this profile to passing functions and saves exact byte matches. Busy functions are skipped so active agents can finish their work.</p></div><details data-default-matches hidden><summary>Functions that match this profile</summary><div data-default-match-list class="mono"></div></details><details data-default-failures hidden><summary>Functions that did not pass</summary><div class="profile-failure-list" data-default-failure-list></div></details>
+    <p class="err-msg" data-default-error role="alert" hidden></p><p class="profile-test-verdict" data-default-verdict></p><details data-default-matches hidden><summary>Functions that match this profile</summary><div data-default-match-list class="mono"></div></details><details data-default-failures hidden><summary>Functions that did not pass</summary><div class="profile-failure-list" data-default-failure-list></div></details>
     <details class="profile-test-log"><summary>Technical log</summary><pre class="joblog" data-default-log></pre></details>`, 'compiler-default-test');
   const get = selector=>body.querySelector(selector), log=get('[data-default-log]'), work=get('[data-default-work]');
   const active=()=>S.dialogKind==='compiler-default-test' && !$("dialog").hidden && get('[data-default-log]')===log;
@@ -811,11 +694,11 @@ async function testProfileAsDefault(button, action="test") {
     const fn = event.target.closest('[data-profile-function]');
     if (fn) { hideDrawer('dialog'); openFn(fn.dataset.profileFunction); }
   });
-  const finish=startWork(nonmatches ? 'Preparing non-matching functions' : 'Preparing default-profile matches',[button]);
+  const finish=startWork('Preparing functions to check',[button]);
   const render=p=>{
     if(!p)return;
     const checked = p.checked ?? p.done ?? 0, counted = Number.isFinite(p.total) && p.total > 0;
-    get('[data-default-status]').textContent = p.phase || (p.total === 0 ? 'No functions to test' : p.applied ? 'Applying matches' : nonmatches ? 'Testing non-matches' : 'Testing default-profile matches');
+    get('[data-default-status]').textContent = p.phase || (p.total === 0 ? 'No functions to test' : 'Checking functions');
     get('[data-default-count]').textContent = counted ? `${checked.toLocaleString()} / ${p.total.toLocaleString()} · ${Math.round(100*checked/p.total)}%` : '';
     get('[data-default-function]').textContent = p.function ? `${p.applied ? 'Checking' : 'Last checked'}: ${p.function}` : '';
     const bar = get('[data-default-bar]');
@@ -833,30 +716,12 @@ async function testProfileAsDefault(button, action="test") {
     get('[data-default-failure-list]').innerHTML=profileFailureGroups(p.failures);
   };
   try {
-    const {job}=await api('/api/compiler/test-default',{method:'POST',body:{slug,profile,action}});
+    const {job}=await api('/api/compiler/test-default',{method:'POST',body:{slug,profile,action:'test'}});
     const out=await followTest(job,(_lines,state)=>{if(active())render(state.progress);});
     if(!active() || !out)return;
-    if(out.replaced){get('[data-default-status]').textContent='Default compiler replaced';get('[data-default-verdict]').textContent=`Default replaced. ${out.preserved} functions kept their previous compiler profile. All existing matches remain verified.`; if(S.slug===slug){S.ov=await api(`/api/project?slug=${encodeURIComponent(slug)}`);renderStats(S.ov);renderProjectSettings();await loadCompilerAnswer();} return;}
     render(out);
     get('[data-default-status]').textContent=out.total ? 'Test complete' : 'No functions to test';
-    if(nonmatches){get('[data-default-verdict]').textContent=out.stale ? 'Inputs changed during testing. Selected functions will be rechecked before they are saved.' : `${out.passed} of ${out.total} non-matching functions match this compiler profile. No settings or saved matches changed.`;
-      if(out.matches?.length){
-        get('[data-apply-matches]').hidden=false;
-        const apply=get('[data-apply-matches-button]');apply.textContent=out.stale ? `Recheck & apply ${out.matches.length} matches` : `Apply ${out.matches.length} matches`;
-        apply.onclick=async()=>{
-          const done=startWork('Rechecking and applying matches',[apply]);
-          try{
-            const {job}=await api('/api/compiler/test-default',{method:'POST',body:{slug,profile,action:'apply-matches',functions:out.matches}});
-            const saved=await followTest(job,(_lines,state)=>{if(active())render(state.progress);});
-            if(!active() || !saved)return;
-            render(saved);get('[data-default-status]').textContent='Matches saved';get('[data-default-verdict]').textContent=`${saved.passed} new matches saved. ${saved.failed} functions skipped or could not be applied; see the results below.`;
-            get('[data-apply-matches]').hidden=true;
-            if(S.slug===slug){S.ov=await api(`/api/project?slug=${encodeURIComponent(slug)}`);renderStats(S.ov);renderProjectSettings();await loadCompilerAnswer();}
-          }catch(error){if(active())fail(error);}
-          finally{done();}
-        };
-      }return;}
-    get('[data-default-verdict]').textContent=out.stale ? 'Inputs changed while testing. Results are outdated; rerun before deciding.' : !out.total ? 'No matched functions currently use the default. No compatibility conclusion can be drawn.' : out.compatible ? 'All tested default-profile matches still match byte for byte. This profile is a compatible default candidate for this population. Nothing has been changed.' : `${out.failed} functions did not pass. These functions need their previous compiler profile if you replace the default. Nothing has been changed.`;
+    get('[data-default-verdict]').textContent=out.stale ? 'The project changed during the test. Run it again for current results.' : !out.total ? 'No matched functions currently use the default. No compatibility conclusion can be drawn.' : out.compatible ? 'All tested default-profile matches still match byte for byte. This compiler passed all the checks.' : `${out.failed} functions did not pass. Those functions still need their existing settings.`;
   } catch(error){if(active())fail(error);}
   finally{finish();}
 }
@@ -868,22 +733,16 @@ function renderCompilerParts(a) {
   $("installedCompilerTest").hidden = S.ov.kind === "fork";
   compilerPartsAnswer = a;
   const parts = a.parts || [], mode = $("compilerGroup").value, sort = $("compilerSort").value;
-  // a range just removed stays listed, with Revert, until the next redraw that isn't its own (main's #removedParts)
-  const removed = (S.removedParts || []).map((p, at) => ({ ...p, at })).filter((p) => p.slug === S.slug
-    && !parts.some((q) => q.start === p.start && q.end === p.end && (q.file || "") === (p.file || "")));
-  const signature = JSON.stringify([mode, sort, S.ov.kind, parts, removed, [...compilerProfileJobs].filter(([key]) => key.startsWith(`${S.slug}:`))]);
+  const signature = JSON.stringify([mode, sort, S.ov.kind, parts, [...compilerProfileJobs].filter(([key]) => key.startsWith(`${S.slug}:`))]);
   if (signature === compilerPartsSignature) return;
   compilerPartsSignature = signature;
   $("compilerViewControls").hidden = !parts.length;
-  const removedList = removed.length ? `<ol class="parts">${removed.map((p) => `<li class="removed"><code>${hexShort(p.start)}–${hexShort(p.end)}</code><span class="grow">${esc(p.compiler)} <span class="flags mono">${esc(Array.isArray(p.flags) ? p.flags.join(" ") : p.flags)}</span></span>
-      ${p.file ? `<span class="muted small mono">${esc(p.file)}</span>` : ""}<span class="muted small">removed</span>
-      <button class="ghost small-btn" type="button" data-revert="${p.at}" aria-label="Build ${hexShort(p.start)} to ${hexShort(p.end)} with ${esc(p.compiler)} again" title="Build this part with ${esc(p.compiler)} again">Revert</button></li>`).join("")}</ol>` : "";
   const row = (p, showProfile) => {
     const [word, why] = PART_STATE[p.check] || PART_STATE[""];
     return `<li class="compiler-range"><div class="compiler-range-heading"><code>${hexShort(p.start)}–${hexShort(p.end)}</code>
       <span class="part-state ${esc(p.check || "none")}">${esc(word)}</span>
       ${p.functions != null ? `<span class="muted small">${plural(p.functions, "function")}</span>` : ""}
-      <button class="ghost small-btn" type="button" data-unrange="${hexShort(p.start)}-${hex8(p.end)}" data-file="${esc(p.file || "")}" aria-label="Build ${hexShort(p.start)} to ${hexShort(p.end)} with the default compiler again" title="Return this range to the default compiler">Remove</button></div>
+</div>
       ${showProfile ? `<div class="small"><b>${esc(p.compiler)}</b><code class="compiler-arguments">${esc(p.flags)}</code></div>` : ""}
       ${p.file ? `<div class="muted small mono">${esc(p.file)}</div>` : ""}
       <div class="compiler-function-links">${compilerFunctionLinks(p.function_list)}</div>
@@ -899,8 +758,8 @@ function renderCompilerParts(a) {
       <summary><span><b>${esc(mode === "family" ? g.family.toUpperCase() : g.compiler)}</b>${g.default ? ` <span class="chip-s">${mode === "family" && g.profiles > 1 ? "Includes default" : "Default"}</span>` : ""}${mode === "settings" ? `<code class="compiler-arguments">${esc(g.flags || "No arguments")}</code>` : ""}<span class="compiler-profile-count">${plural(g.parts.length, "range")}${g.functions != null ? ` · ${plural(g.functions, "function")}` : ""}${mode === "family" ? ` · ${plural(g.profiles, "argument profile")}` : ""}</span></span></summary>
       ${job?.message ? `<div class="compiler-profile-action">${job.running ? `<p class="small muted">Only exact byte matches move to the project default. Drafts and non-matches keep their settings.</p>` : ""}<p class="small" role="status">${esc(job.message)}</p>${job.running ? `<progress aria-label="Comparing profile with default" max="${job.progress?.total || 1}"${job.progress ? ` value="${job.progress.done || 0}"` : ""}></progress><button class="ghost small-btn" type="button" data-profile-stop="${index}">Stop</button>` : ""}</div>` : ""}
       <ol class="compiler-range-list">${g.parts.map(p => row(p, mode === "family")).join("")}</ol></details>
-      ${actions ? `<details class="agent-menu compiler-profile-menu"><summary aria-label="Actions for ${esc(g.compiler)} profile" title="Compiler profile actions">⋮</summary><div class="agent-menu-items"><button type="button" data-profile-default="${index}"${job?.running ? " disabled" : ""}>Compare all matches with default</button><button type="button" data-profile-test-default="${index}">Test this profile as default</button><button type="button" data-profile-test-default="${index}" data-profile-action="replace">Replace default with this profile</button><button type="button" data-profile-test-default="${index}" data-profile-action="nonmatches">Test all non-matches</button></div></details>` : ""}</div>`;
-    }).join("")) + removedList);
+      ${actions ? `<details class="agent-menu compiler-profile-menu"><summary aria-label="Actions for ${esc(g.compiler)} profile" title="Compiler profile actions">⋮</summary><div class="agent-menu-items"><button type="button" data-profile-default="${index}"${job?.running ? " disabled" : ""}>Compare all matches with default</button><button type="button" data-profile-test-default="${index}">Test this profile as default</button></div></details>` : ""}</div>`;
+    }).join("")));
   $("compilerParts").querySelectorAll("details[data-range-reason]").forEach(d => d.ontoggle = () => {
     if (!d.isConnected) return;
     if (d.open) compilerReasonsOpen.add(d.dataset.rangeReason); else compilerReasonsOpen.delete(d.dataset.rangeReason);
@@ -935,7 +794,7 @@ function renderCompilerAnswer(a) {
 }
 function renderCompilerWaiting(ov) {
   const sg = compilerSuggestions(ov);
-  setHtml($("compilerWaiting"), sg.length ? `<p class="col-title">Waiting for you</p>${sg.map(suggestionHtml).join("")}` : "");
+  setHtml($("compilerWaiting"), sg.length ? `<p class="col-title">Compiler changes being checked</p>${sg.map(suggestionHtml).join("")}` : "");
 }
 $("deleteBtn").onclick = () => {
   dialog("Remove project", `<p>Remove <b>${esc(S.ov.title)}</b> from decompdecomp? Matched functions and notes are deleted.</p>
@@ -1044,21 +903,15 @@ function renderCompilerResults() {
       const profile = value => value ? `${esc(value[0])} ${esc(value[1].join(" "))}` : "Unavailable for earlier comparisons";
       const delta = r.before == null || r.best == null ? "" : ` (${r.best - r.before >= 0 ? "+" : ""}${(r.best - r.before).toFixed(2)} points)`;
       const alternatives = (r.ranked || []).filter(p => p.percent != null && (!r.profile || p.toolchain !== r.profile[0] || JSON.stringify(p.flags) !== JSON.stringify(r.profile[1]))).slice(0, 12);
-      const apply = p => `<button class="ghost small-btn" type="button" data-apply-function="${esc(r.function)}" data-apply-toolchain="${esc(p.toolchain)}" data-apply-flags="${esc(JSON.stringify(p.flags))}"${r.stale || r.applied ? " disabled" : ""}>Apply these settings</button>`;
-      const winner = (r.ranked || []).find(p => r.profile && p.toolchain === r.profile[0] && JSON.stringify(p.flags) === JSON.stringify(r.profile[1]));
       return `<details class="compiler-result" data-function="${esc(r.function)}"${openFunctions.has(r.function) ? " open" : ""}><summary><button class="compiler-function-link" type="button" data-open-compiler-function="${esc(r.function)}" title="Open function ${esc(r.function)}">${esc(r.function)}</button> · ${score(r.before)} → ${score(r.best)}${delta}${r.exact ? " · byte identical" : ""}</summary>
         <div class="compiler-result-detail"><p><b>Score:</b> ${score(r.before)} → ${score(r.best)}${delta}${r.exact ? ' <span class="compiler-exact-badge">Byte identical</span>' : ""}</p>
         <p><b>Previous settings:</b> <code>${profile(r.before_profile)}</code></p>
         <p><b>Best tested settings:</b> <code>${profile(r.profile || r.before_profile)}</code></p>
-        <p><b>Status:</b> ${r.stale ? "Inputs changed; retest before applying" : r.applied ? "Applied and rechecked" : r.apply_error ? "Could not apply" : r.improved ? "Ready to apply" : "No better settings found"}</p>
+        <p><b>Status:</b> ${r.stale ? "Inputs changed; retest before applying" : r.applied ? "Applied and rechecked" : r.apply_error ? "Could not apply" : r.exact ? "Exact match found" : r.improved ? "Closer match found. Helpers can use this lead." : "No better settings found"}</p>
         ${r.apply_error ? `<p class="err-msg">${esc(r.apply_error)}</p>` : ""}
-        ${r.improved && !r.applied && !r.stale && winner ? apply(winner) : ""}
-        ${alternatives.length ? `<details class="compiler-alternatives" data-function="${esc(r.function)}"${openAlternatives.has(r.function) ? " open" : ""}><summary>Show other candidates (${alternatives.length})</summary><div class="compiler-result-actions">${alternatives.map(p => `<div><code>${esc(p.toolchain)} ${esc(p.flags.join(" "))}</code> · ${score(p.percent)}${p.exact ? " · byte identical" : ""} ${!r.applied && !r.stale && (p.exact || r.before == null || p.percent > r.before + .001) ? apply(p) : ""}</div>`).join("")}</div></details>` : ""}</div></details>`;
+        ${alternatives.length ? `<details class="compiler-alternatives" data-function="${esc(r.function)}"${openAlternatives.has(r.function) ? " open" : ""}><summary>Show other candidates (${alternatives.length})</summary><div class="compiler-result-actions">${alternatives.map(p => `<div><code>${esc(p.toolchain)} ${esc(p.flags.join(" "))}</code> · ${score(p.percent)}${p.exact ? " · byte identical" : ""}</div>`).join("")}</div></details>` : ""}</div></details>`;
     }).join("") : `<p class="small muted">${compilerRows.length ? "No results in this view." : "No eligible saved C attempts were compared yet."}</p>`);
   if (compilerRows.length) { $("compilerResultSort").value = sort; $("compilerResultSort").onchange = renderCompilerResults; }
-  if (compilerRows.some(r => r.improved && !r.stale && !r.applied && r.profile)) {
-    box.insertAdjacentHTML("afterbegin", '<button class="ghost small-btn" type="button" id="applyAllCompilerResults">Apply all improvements</button>');
-  }
   box.scrollTop = scrollTop;
 }
 $("compilerProgress").onclick = (e) => {
@@ -1141,7 +994,7 @@ async function startOrStopCompilerComparison() {
   try {
     const {job} = await api("/api/compilermap", {method: "POST", body: {slug, find_better_settings: true,
       flags_only: $("compilerFlagsOnly").checked, used_profiles_only: $("compilerUsedProfilesOnly").checked,
-      untested_only: !$("compilerRetest").checked, auto_apply: $("compilerAutoApply").checked}});
+      untested_only: !$("compilerRetest").checked, auto_apply: !!S.ov?.auto_compiler}});
     followCompilerComparison(job, slug);
   } catch (e) { error.textContent = e.message; error.hidden = false; startButton.disabled = false; }
 }
@@ -1153,26 +1006,4 @@ $("dialogBody").addEventListener("click", (e) => {
   const name = button.dataset.openCompilerFunction;
   hideDrawer("dialog");
   openFn(name);
-});
-$("dialogBody").addEventListener("click", async (e) => {
-  const button = e.target.closest("[data-apply-function]");
-  if (S.dialogKind !== "compiler-results" || !button || button.disabled) return;
-  button.disabled = true;
-  try {
-    await api("/api/compilermap", {method: "POST", body: {slug: S.slug, apply_compiler_result: true,
-      function: button.dataset.applyFunction, toolchain: button.dataset.applyToolchain,
-      flags: JSON.parse(button.dataset.applyFlags)}});
-    await loadCompilerComparison();
-  } catch (error) { toast(esc(error.message), "err"); button.disabled = false; }
-});
-$("dialogBody").addEventListener("click", async (e) => {
-  const button = e.target.closest("#applyAllCompilerResults");
-  if (S.dialogKind !== "compiler-results" || !button || button.disabled) return;
-  button.disabled = true;
-  for (const row of compilerRows.filter(r => r.improved && !r.stale && !r.applied && r.profile)) {
-    try { await api("/api/compilermap", {method: "POST", body: {slug: S.slug, apply_compiler_result: true,
-      function: row.function, toolchain: row.profile[0], flags: row.profile[1]}}); }
-    catch (error) { toast(`${esc(row.function)}: ${esc(error.message)}`, "err"); }
-  }
-  await loadCompilerComparison();
 });

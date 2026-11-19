@@ -135,7 +135,7 @@ async function poll() {
     let mapDirty = false;
     for (const ev of live.events) {
       S.lastEvent = Math.max(S.lastEvent, ev.id);
-      if (["match", "split", "rename", "compiler", "reopen", "not_c", "reimport", "analysis", "readable"].includes(ev.kind)) mapDirty = true;
+      if (["match", "split", "rename", "compiler", "boundary", "reopen", "not_c", "reimport", "analysis", "readable"].includes(ev.kind)) mapDirty = true;
       if (ev.kind === "match" && !first && ev.created_at >= S.openedAt) S.flash.set(ev.detail, performance.now());
     }
     for (const at of live.attempts) {
@@ -445,7 +445,7 @@ function renderCompilerLine(ov) {
   if (box.hidden) return;
   const parts = (ov.compiler_ranges || []).length, waiting = compilerSuggestions(ov).length;
   setHtml(box, `<span class="al-label">Compiler</span><span class="al-text">Built with <b>${esc(ov.compiler.name)}</b>${parts ? `; ${plural(parts, "part")} with another compiler` : ""}.${
-    waiting ? ` <b class="al-wait">${plural(waiting, "change")} waiting for you.</b>` : ""}</span><a class="link small" href="#/p/${esc(S.slug)}/settings">${waiting ? "Look at it" : "Details"}</a>`);
+    waiting ? ` <b class="al-wait">${plural(waiting, "change")} being checked.</b>` : ""}</span><a class="link small" href="#/p/${esc(S.slug)}/settings">Details</a>`);
 }
 /* An agent's (or the survey's) "this part was built with another compiler": the compiler panel's, not the Agents
    view's (a suggestion without a compiler stays there). */

@@ -7,7 +7,44 @@ import pytest
 
 from decompnet import consoles, toolchains
 from decompnet.app.engine import RomNetwork
+from decompnet.network import NetworkError
 from decompnet.project import compiler_for
+
+
+def test_compiler_suggestion_needs_exact_proof_and_checks_every_affected_match(tmp_path, monkeypatch):
+    from .test_loading import tiny_game
+
+    net = RomNetwork(tmp_path / "decomp.db", tmp_path)
+    proj = tiny_game(net, functions=72)
+    cfg = net.cfg(proj)
+    tc = cfg["compiler"]["toolchain"]
+    source = "int func_0(void) { return 1; }"
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET status='matched',matched_source='matched C' WHERE name!='func_0'")
+    for i in range(3):
+        agent, _ = net.local_agent(f"helper-{i}")
+        assert "needs an exact match" in net.suggest(agent, "game", "Tests are needed first.", tc, "-O1")
+    assert net.cfg(net.project_row("game"))["compiler"] == cfg["compiler"]
+
+    monkeypatch.setattr(net, "_judge_with", lambda *a: (True, SimpleNamespace(percent=100.0), ""))
+
+    def regress(_project, _header, *, only, header_for):
+        assert len(only) == 71 and header_for(only[-1]) == ""
+        return [(only[-1]["name"], "changed")]
+
+    monkeypatch.setattr(net, "regression_test", regress)
+    assert "kept its compiler" in net.suggest(agent, "game", "Exact match in this compiler.", tc, "-O1",
+                                             function="func_0", source=source)
+    assert net.cfg(net.project_row("game"))["compiler"] == cfg["compiler"]
+    monkeypatch.setattr(net, "_judge_with", lambda *a: (False, SimpleNamespace(percent=99.9), ""))
+    with pytest.raises(NetworkError, match="could not reproduce the exact match"):
+        net.apply_compiler_settings(agent, "game", "func_0", tc, "Close match", "-O1", source)
+    monkeypatch.setattr(net, "_judge_with", lambda *a: (True, SimpleNamespace(percent=100.0), ""))
+    assert "Applied" in net.apply_compiler_settings(agent, "game", "func_0", tc, "Exact match", "-O1", source)
+    after = net.cfg(net.project_row("game"))
+    assert compiler_for(after, 0x100000)["flags"] == ["-O1"]
+    assert compiler_for(after, 0x100010) == cfg["compiler"]
+    assert net.decision_history("game")[0]["agent"] == agent.name
 
 
 def test_own_compiler_is_usable_in_profile_selection(tmp_path, monkeypatch):

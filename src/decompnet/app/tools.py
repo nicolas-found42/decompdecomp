@@ -71,7 +71,8 @@ one claim; one function back is normal.)
    structs you worked out, rename_symbol for functions/data whose purpose is now clear, and share_knowledge
    for a convention every agent on this game should know (it reaches them once a model other than yours agrees).
    Right C that can't match because the project's compiler or flags look wrong? search_flags(function) tries
-   its compiler's flags at once, try_compiler(...) other compilers; then suggest(...) what matches to the user.
+   its compiler's flags at once, try_compiler(...) other compilers. Use apply_compiler_settings for an exact
+   match on one function, or suggest when evidence supports a larger range.
 5. compile_and_diff says when to move on ({budget}): then
    release_function with precise notes (what you tried, what is left) and claim the next one. Before
    that, compile the next step instead of releasing. Needs another function done first (a callee, an inlined
@@ -87,8 +88,8 @@ in your messages: work, don't narrate.
 WORK_STRUCTS = """\
 The brief says when a function is handed a struct: guess_struct(function, "arg0") shows one as C."""
 WORK_BOUNDARY = """\
-The function runs on past its end into padding, linker leftovers or data? report_boundary(...) where it really
-ends, then work on as it is."""
+The function runs past its end? Use report_boundary to say where it ends and what follows. Check any reports
+on the function against your own evidence. Keep working while the app or another model checks an open report."""
 
 # A helper started on "make matched code readable" (options task=readable), in any project (app/readable.py);
 # {names}: step 3, as the project's mode has it (READABLE_ROM, READABLE_FORK)
@@ -245,13 +246,18 @@ def _fork(net: RomNetwork, slug: str, what: str) -> str:
 def project_info(net: RomNetwork, slug: str) -> str:
     wish = net.instructions(slug)
     text = _project_info(net, slug)
-    open_ = net.overview(slug).get("suggestions") or []
+    overview = net.overview(slug)
+    open_ = overview.get("suggestions") or []
     if open_:  # so agents agree with one (suggest the same) rather than repeat it in other words
-        text += "\nOpen suggestions to the user (suggest the same compiler and flags to agree):\n" + "\n".join(
+        text += "\nOpen suggestions for agents to check:\n" + "\n".join(
             f"- {s['toolchain'] or '(setup)'} {' '.join(s['flags'])}"
             + "".join(f" 0x{a:X}-0x{b:X}" for a, b in s.get("ranges", [])) + f": {s['text'][:200]} [{len(s['agents'])} agree"
             + (f"; {s['check']}" if s["check"] else "") + "]" for s in open_)
-    if not net.fork_slug(slug) and (known := net.knowledge.for_prompt(slug)):
+    if reports := overview.get("boundaries", [])[-5:]:
+        text += "\nFunction ends to check independently with get_function and report_boundary:\n" + "\n".join(
+            f"- {item['function']} at 0x{item['end']:X} ({item.get('tail') or 'unknown'} after it): {item['reason']}"
+            for item in reports)
+    if known := net.knowledge.for_prompt(slug):
         text += "\n" + known + "\n"
     if (order := net.claim_order(slug)):
         text += (f"\nThe project's owner chose the order helpers take functions in: {CLAIM_ORDERS[order]}. "
@@ -277,6 +283,8 @@ def _project_info(net: RomNetwork, slug: str) -> str:
             + (f"Other compiler settings by address:{ranges}\n" if ranges else "")
             + f"progress: {ov['matched']}/{ov['functions']} functions matched ({pct:.1f}% of code), "
             f"{ov['attempts']} compiles so far, context.h v{ov['context_version']}\n"
+            f"Open work: {ov['functions'] - ov['matched'] - ov['set_aside']} functions. "
+            f"Set aside: {ov['set_aside']} functions, including {ov['verified_assembly']} verified as assembly.\n"
             f"Next: claim_function(). Guides: guide().")
 
 
@@ -314,11 +322,28 @@ def _add_note(net: RomNetwork, agent: Agent, slug: str, text: str, function: str
     return net.add_note(agent, slug, text, function)
 
 
+def _share_knowledge(net: RomNetwork, agent: Agent, slug: str, text: str = "", supports: int = 0,
+                     function: str = "", reference: str = "") -> str:
+    if link := net._link(slug):
+        return link.call("/collab/knowledge", agent, text=text, supports=supports, function=function,
+                         reference=reference)
+    return net.knowledge.share(agent, slug, text, supports, function, reference)
+
+
 def _propose_sdk_name(net: RomNetwork, agent: Agent, slug: str, candidate: str) -> str:
     if link := net._link(slug):
         return link.call("/collab/sdk-libraries", agent, candidate=candidate)
     proj = net.project_row(slug)
     return net.console(proj).library_lookup.propose(net, proj, agent, candidate)
+
+
+def _review_sdk_name(net: RomNetwork, agent: Agent, slug: str, candidate: str, decision: str,
+                     reason: str, witness: str = "") -> str:
+    if link := net._link(slug):
+        return link.call("/collab/sdk-libraries", agent, candidate=candidate, decision=decision, reason=reason,
+                         witness=witness)
+    proj = net.project_row(slug)
+    return net.console(proj).library_lookup.review(net, proj, agent, candidate, decision, reason, witness)
 
 
 def _sdk_symbols(net: RomNetwork, agent: Agent, slug: str, function: str = "", offset: int = 0) -> str:
@@ -362,9 +387,9 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.edit_context(agent, slug, old, new, message, function or None),
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
     "split_function": lambda net, agent, slug, function, at, new_name="":
-        net.split_function(agent, slug, function, at, new_name),
-    "report_boundary": lambda net, agent, slug, function, end, reason:
-        net.request_boundary(agent, slug, function, end, reason),
+        net.split_function(agent, slug, function, at, new_name, checked=True),
+    "report_boundary": lambda net, agent, slug, function, end, reason, tail="":
+        net.request_boundary(agent, slug, function, end, reason, tail),
     "read_data": lambda net, agent, slug, what, length=64: (net.forks.read_data(agent, slug, what, length)
                                                             if net.fork_slug(slug) else net.read_data(slug, what, length)),
     "pe_imports": lambda net, agent, slug, function, offset=0: net.forks.function_references(slug, function, "pe_imports", offset),
@@ -376,7 +401,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.compiler_map_text(slug, bool(survey), bool(check_ranges)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
     "add_note": lambda net, agent, slug, text, function="": _add_note(net, agent, slug, text, function),
-    "share_knowledge": lambda net, agent, slug, text="", supports=0: net.knowledge.share(agent, slug, text, supports),
+    "share_knowledge": _share_knowledge,
     "search_flags": lambda net, agent, slug, function, compiler="", source="":
         net.search_flags(agent, slug, function, compiler, source),
     "claim_readable": lambda net, agent, slug: net.readability.claim(agent, slug),
@@ -384,10 +409,13 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "tidy_done": lambda net, agent, slug, unit, summary: net.readability.tidy_done(agent, slug, unit, summary),
     "suggest": lambda net, agent, slug, text, compiler="", flags="", function="", ranges="", source="":
         net.suggest(agent, slug, text, compiler, flags, function or None, ranges, source),
+    "apply_compiler_settings": lambda net, agent, slug, function, compiler, reason, flags="", source="":
+        net.apply_compiler_settings(agent, slug, function, compiler, reason, flags, source),
     "ps2_decompile": lambda net, agent, slug, function, offset=0:
         ps2_analysis.for_agent(net, slug, "r5900", function, offset),
     "ps2_sdk_symbols": _sdk_symbols,
     "propose_sdk_name": _propose_sdk_name,
+    "review_sdk_name": _review_sdk_name,
     "deep_permuter": _deep_search,
     "verify_sdk_assembly": _verify_sdk_assembly,
     "background_job": _background_job,
@@ -422,7 +450,7 @@ READ_ONLY = frozenset(PS2_ANALYSIS | REFERENCE_TOOLS | {"project_info", "get_fun
                        "find_similar", "guide", "read_file", "search_code", "file_status", "standins_for"})
 
 ROM_ONLY = PS2_ANALYSIS | {"get_context", "edit_context", "split_function", "redraft", "search_flags", "compare_compilers",
-                           "propose_sdk_name", "verify_sdk_assembly"}
+                           "propose_sdk_name", "review_sdk_name", "verify_sdk_assembly"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file", "join_functions", "tidy_done",
              "standins_for"}
 LTCG_ONLY = {"standins_for"}  # only projects of games built with link-time code generation have harness/ files
@@ -438,7 +466,7 @@ def _supports(console, name: str, fork: bool) -> bool:
     """Whether `console` can do `name` in this kind of project. A tool no console lacks keeps its place."""
     if name in PS2_ANALYSIS:
         return "ps2_analysis" in console.features and not fork
-    if name == "propose_sdk_name":
+    if name in {"propose_sdk_name", "review_sdk_name"}:
         # A public build has no app-wide mapping from the original linked EE image to its source functions.
         # Its objdiff target objects do not provide the imported ROM addresses used in SDK name reviews.
         return bool(console.library_lookup and not fork)
@@ -455,6 +483,8 @@ def _supports(console, name: str, fork: bool) -> bool:
         return console.reads_structs
     if name == "compiler_map":
         return console.file_compilers if fork else arch.COMPILER_MAP in console.features
+    if name == "apply_compiler_settings":
+        return bool(console.file_compilers if fork else console.compilers)
     return True
 
 
@@ -546,7 +576,7 @@ ALWAYS_LOAD = agents.TOOL_META
 
 
 HEAVY_TOOLS = frozenset(PS2_ANALYSIS | {"compile_and_diff", "search_code", "search_flags", "try_compiler", "compare_compilers",
-                                       "propose_sdk_name",
+                                       "propose_sdk_name", "review_sdk_name", "apply_compiler_settings", "report_boundary",
                          "edit_file", "split_file", "join_functions"})
 
 
@@ -654,18 +684,17 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     @mcp.tool(meta=ALWAYS_LOAD)
     async def split_function(ctx: Context, function: str, at: str, new_name: str = "") -> str:
         """Split a function the disassembler merged with the next one (e.g. after a function that never
-        returns). `at` is the address where the second function starts."""
+        returns). `at` is where the second function starts. The split must account for every byte and
+        preserve prior matches."""
         return await run(ctx, "split_function", function=function, at=at, new_name=new_name)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def report_boundary(ctx: Context, function: str, end: str, reason: str) -> str:
-        """Report that a function really ends earlier: what follows `end` is alignment padding, linker leftovers
-        or data, not code anyone wrote (or, in a PC project, another function the analysis merged with it), so no C
-        can match the whole thing. ROM projects: the user approves it on the project page; then the function ends at
-        `end` (an address) and the rest is set aside. PC projects: once agents of two models agree, the function is
-        cut at `end` (an address, or an offset into it: +0x20) and the rest is a function of its own, set aside
-        when it isn't code, kept only if the game still builds byte for byte. Say how you can tell."""
-        return await run(ctx, "report_boundary", function=function, end=end, reason=reason)
+    async def report_boundary(ctx: Context, function: str, end: str, reason: str, tail: str = "") -> str:
+        """Say where a function ends and what follows it. In ROM projects set tail to padding, data, or function.
+        Reports need independent agreement. The app verifies a return before non-code and checks
+        references, byte ranges, padding, and prior matches.
+        PC projects accept an offset like +0x20 and verify the rebuild before keeping an agreed change."""
+        return await run(ctx, "report_boundary", function=function, end=end, reason=reason, tail=tail)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def read_data(ctx: Context, what: str, length: int = 64) -> str:
@@ -759,20 +788,19 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "tidy_done", unit=unit, summary=summary)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def share_knowledge(ctx: Context, text: str = "", supports: int = 0) -> str:
+    async def share_knowledge(ctx: Context, text: str = "", supports: int = 0, function: str = "",
+                              reference: str = "") -> str:
         """Propose something every agent on this game should know (a convention, what a struct is, how the code
         is organised), or back an open proposal with supports=its number. It reaches every agent once helpers
-        running two different models agree. Not for which compiler built what: that's the compiler map's job."""
-        return await run(ctx, "share_knowledge", text=text, supports=supports)
+        running two different models agree. In a ROM project, give function and reference instead to share a
+        reference the app checks directly. Compiler settings go through the compiler tools."""
+        return await run(ctx, "share_knowledge", text=text, supports=supports, function=function, reference=reference)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def suggest(ctx: Context, text: str, compiler: str = "", flags: str = "", function: str = "",
                       ranges: str = "", source: str = "") -> str:
-        """Suggest a change to the project's setup you can't make yourself, for the user to apply: above all a
-        different compiler or flags, when C that is right can't match (the code's style says another compiler built
-        it). Test it with try_compiler first: a suggestion whose function doesn't match with it is refused. Say what
-        you saw. project_info lists open suggestions: suggesting the same compiler and flags is a vote for it; with
-        the user's permission, a proven or agreed one is applied at once.
+        """Propose a compiler for the project or a range. Test it with try_compiler first, then explain the
+        evidence and give the function and source that match. The app checks affected matches before applying it.
 
         Args:
             text: what should change and the evidence
@@ -786,6 +814,14 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
                          source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
+    async def apply_compiler_settings(ctx: Context, function: str, compiler: str, reason: str, flags: str = "",
+                                      source: str = "") -> str:
+        """Use a verified compiler for one function (or its source file in a project with per-file compilers).
+        The given or saved C must match exactly and all affected matches must still pass."""
+        return await run(ctx, "apply_compiler_settings", function=function, compiler=compiler, reason=reason,
+                         flags=flags, source=source)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def ps2_decompile(ctx: Context, function: str, offset: int = 0) -> str:
         """Read Ghidra Emotion Engine pseudocode for a PS2 function name or address. offset continues a long result."""
         return await run(ctx, "ps2_decompile", function=function, offset=offset)
@@ -797,8 +833,16 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def propose_sdk_name(ctx: Context, candidate: str) -> str:
-        """Send a candidate ID from ps2_sdk_symbols to the owner's desktop review. The owner applies names."""
+        """Leave an SDK name lead for other agents to investigate. Use review_sdk_name to act on evidence."""
         return await run(ctx, "propose_sdk_name", candidate=candidate)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def review_sdk_name(ctx: Context, candidate: str, decision: str, reason: str, witness: str = "") -> str:
+        """Apply or dismiss a candidate ID from ps2_sdk_symbols and give the evidence in reason. Apply a
+        corroborated name with witness set to the address of a caller, jump target, or referenced symbol.
+        Clear archive evidence can stand on its own. Leave unresolved candidates open. Applying a name
+        checks every existing match and records the reason in the project's history."""
+        return await run(ctx, "review_sdk_name", candidate=candidate, decision=decision, reason=reason, witness=witness)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def deep_permuter(ctx: Context, function: str, minutes: int = 10, variants: int = 500) -> str:

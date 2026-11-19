@@ -12,6 +12,7 @@ const ctx=vm.createContext({$,URL,JSON,Number,S:{projects:[{slug:'game',name:'Ga
   beginWork:()=>()=>{completed++;},showJobError:(log,error)=>{log.textContent=error;},
   api:(url,options)=>new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}))});
 const source=fs.readFileSync('src/decompnet/app/static/js/pages.js','utf8');
+vm.runInContext(fs.readFileSync('src/decompnet/app/static/js/tool-catalog.js','utf8'),ctx);
 vm.runInContext(source.slice(source.indexOf('let manualMcpRead')),ctx);
 (async()=>{
   $('mcpProject').value='game';
@@ -31,10 +32,14 @@ vm.runInContext(source.slice(source.indexOf('let manualMcpRead')),ctx);
   assert.equal($('mcpCreate').disabled,true);
   requests[0].resolve([{slug:'game',title:'Game'}]);
   for(let i=0;i<4;i++) await Promise.resolve();
-  requests[1].resolve({url:'http://127.0.0.1:6464/mcp',transport:'Streamable HTTP',tools:[{name:'<unsafe>',description:'<script>',inputSchema:{type:'object'}}],connections:[]});
+  requests[1].resolve({url:'http://127.0.0.1:6464/mcp',transport:'Streamable HTTP',tools:[
+    {name:'<unsafe>',description:'<script>',inputSchema:{type:'object'}},
+    {name:'project_info',description:'Detailed tool description',inputSchema:{type:'object'}}
+  ],connections:[]});
   await load;
   assert.match($('mcpStatus').innerHTML,/6464/);
   assert.match($('mcpTools').innerHTML,/&lt;unsafe>/);
+  assert.match($('mcpTools').innerHTML,/See the project, its progress/);
   const creating=$('mcpCreate').onclick();
   assert.equal(requests[2].options.body.slug,'game');
   requests[2].resolve({url:'http://127.0.0.1:6464/mcp',token:'dn_private',instructions:'Read project_info'});

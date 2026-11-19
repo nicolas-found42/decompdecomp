@@ -129,6 +129,11 @@ def asm_reason(code: bytes, big_endian: bool = True, **_facts) -> str | None:
     return None
 
 
+def ends_with_return(code: bytes, big_endian: bool) -> bool:
+    """An unconditional branch to the link register (blr)."""
+    return int.from_bytes(code[-4:], "big" if big_endian else "little") == 0x4E800020
+
+
 def is_padding(code: bytes, big_endian: bool) -> bool:
     """PowerPC padding is nop = ori r0,r0,0 (0x60000000) or a zero-filled gap (0x00000000): an all-padding,
     word-aligned block is padding. The PS3 splitter treats zero words between functions as padding too."""

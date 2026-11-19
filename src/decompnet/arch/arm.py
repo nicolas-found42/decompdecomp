@@ -76,6 +76,18 @@ def _padding(code: bytes, big_endian: bool, thumb: bool) -> bool:
     return len(code) % 4 == 0 and all(int.from_bytes(code[i:i + 4], order) == ARM_NOP for i in range(0, len(code), 4))
 
 
+def arm_ends_with_return(code: bytes, big_endian: bool) -> bool:
+    """An unconditional bx lr, mov pc, lr, or pop that restores pc."""
+    last = int.from_bytes(code[-4:], "big" if big_endian else "little")
+    return len(code) >= 4 and (last in (0xE12FFF1E, 0xE1A0F00E) or last & 0xFFFF8000 == 0xE8BD8000)
+
+
+def thumb_ends_with_return(code: bytes, big_endian: bool) -> bool:
+    """A bx lr or pop that restores pc on Thumb-1."""
+    last = int.from_bytes(code[-2:], "big" if big_endian else "little")
+    return len(code) >= 2 and (last == 0x4770 or last & 0xFF00 == 0xBD00)
+
+
 def arm_is_padding(code: bytes, big_endian: bool = False) -> bool:
     """Alignment padding an ARM-mode function can be trimmed down to: zero fill or the ARM nop (mov r0, r0)."""
     return _padding(code, big_endian, thumb=False)

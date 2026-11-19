@@ -16,9 +16,9 @@ MATCHING = REQUIRED | {'get_candidate','compile_patch','compile_variants','get_a
     'read_file','search_code','edit_file','file_status','standins_for'}
 PRESETS = {'full': ('All tools', None), 'matching': ('Matching essentials', MATCHING),
            'investigation': ('Compiler and data investigation', MATCHING | {'read_data','get_class','guess_struct','pe_imports','pe_data_refs',
-               'ps2_decompile','ps2_sdk_symbols','ps2_symbol_transfer','propose_sdk_name','verify_sdk_assembly',
+               'ps2_decompile','ps2_sdk_symbols','ps2_symbol_transfer','propose_sdk_name','review_sdk_name','verify_sdk_assembly',
                'compiler_map','try_compiler','compare_compilers','search_flags','compiler_experiments','get_compiler_trial',
-               'suggest','report_boundary'}),
+               'suggest','apply_compiler_settings','report_boundary'}),
            'polishing': ('Polishing and names', REQUIRED | {'claim_readable','make_readable','tidy_done','rename_symbol',
                'guide','get_context','edit_context','read_file','edit_file','file_status','search_code','add_note','find_similar'})}
 

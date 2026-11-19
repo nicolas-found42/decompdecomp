@@ -670,13 +670,16 @@ function eventHtml(ev) {
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
     case "import": return `ROM analysed: ${esc(d)}`;
     case "compiler": return `compiler set to ${esc(d)}`;
+    case "sdk-review": return `${who} reviewed an SDK name. ${esc(d)}`;
+    case "boundary": return `${who} checked where a function ends. ${esc(d)}`;
+    case "needs-setup": return `<span class="bad">${who} needs setup. ${esc(d)}</span>`;
     case "collab": return esc(d);
     case "paused": return `<span class="bad">${who} paused: ${esc(d)}</span>`;
     case "stopped": return `${who} stopped: ${esc(d)}`;
     case "autopilot": return `<span class="who">autopilot</span> ${esc(d)}`;
     case "reopen": return esc(d);
     case "not_c": return `<span class="not-c" aria-hidden="true"></span> ${esc(d)}`;
-    case "knowledge": return `${who} and another model agree on something every agent should know (${esc(d)}): What agents learned, below`;
+    case "knowledge": return `${who} shared a checked finding. ${esc(d)}`;
     default: return `${who} ${esc(ev.kind)} ${esc(d)}`;
   }
 }

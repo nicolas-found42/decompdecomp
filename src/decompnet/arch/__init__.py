@@ -9,9 +9,11 @@ the feature shows as missing on that console, not as an `if` somewhere in the en
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
+
+import capstone
 
 from . import arm, mips, mips_fields, ppc, ppc64, x86, x86_fields
 
@@ -51,21 +53,39 @@ class Arch:
     # whether this code's last instruction has a delay slot, so the next word belongs to the function (MIPS):
     # (code, big_endian) -> bool. Architectures without delay slots leave it None.
     ends_in_delay_branch: Callable[[bytes, bool], bool] | None = None
+    # Whether execution at the end cannot fall through because the function returns.
+    ends_with_return: Callable[[bytes, bool], bool] | None = None
+    targets: Callable[[bytes, int, bool, str], Iterable[int]] | None = None
+
+    def branch_targets(self, code: bytes, start: int, big_endian: bool, variant: str) -> Iterable[int]:
+        """Absolute destinations of statically readable jumps and calls."""
+        if self.targets:
+            yield from self.targets(code, start, big_endian, variant)
+        elif mode := self.capstone.get(big_endian):
+            decoder = capstone.Cs(*mode)
+            decoder.detail = decoder.skipdata = True
+            for insn in decoder.disasm(code, start):
+                if insn.id and (insn.group(capstone.CS_GRP_JUMP) or insn.group(capstone.CS_GRP_CALL)):
+                    if (ops := insn.operands) and ops[-1].type == capstone.CS_OP_IMM:
+                        yield ops[-1].imm
 
 
 ARCHES = [
     Arch("mips", "MIPS", mips.CAPSTONE, mips.RELOC_MASKS, mips.asm_reason, True,
          frozenset({COMPILER_MAP, CLASSES, BOUNDARIES, STRUCTS}), mips_fields.read_facts,
          variants={mips.ALLEGREX: mips.allegrex_lines}, is_padding=mips.is_padding,
-         ends_in_delay_branch=mips.ends_in_delay_branch),
+         ends_in_delay_branch=mips.ends_in_delay_branch, ends_with_return=mips.ends_with_return,
+         targets=mips.branch_targets),
     Arch("ppc", "PowerPC", ppc.CAPSTONE, ppc.RELOC_MASKS, ppc.asm_reason, is_padding=ppc.is_padding),
-    Arch("ppc64", "PowerPC64", ppc64.CAPSTONE, ppc64.RELOC_MASKS, ppc64.asm_reason, features=frozenset({BOUNDARIES}), is_padding=ppc.is_padding),
+    Arch("ppc64", "PowerPC64", ppc64.CAPSTONE, ppc64.RELOC_MASKS, ppc64.asm_reason,
+         features=frozenset({BOUNDARIES}), is_padding=ppc.is_padding, ends_with_return=ppc.ends_with_return),
     Arch("x86", "x86", x86.CAPSTONE, x86.RELOC_MASKS, features=frozenset({CLASSES, STRUCTS}),
          field_accesses=x86_fields.read_facts, float_operands=x86.float_operands, method_draft=x86.method_draft, is_padding=x86.is_padding),
     Arch("x86_64", "x86-64", x86.CAPSTONE_64, x86.RELOC_MASKS_64, is_padding=x86.is_padding),
-    Arch("arm", "ARM", arm.CAPSTONE, arm.RELOC_MASKS, arm.asm_reason, features=frozenset({BOUNDARIES}), is_padding=arm.arm_is_padding),
+    Arch("arm", "ARM", arm.CAPSTONE, arm.RELOC_MASKS, arm.asm_reason,
+         features=frozenset({BOUNDARIES}), is_padding=arm.arm_is_padding, ends_with_return=arm.arm_ends_with_return),
     Arch("thumb", "Thumb", arm.THUMB_CAPSTONE, arm.THUMB_RELOC_MASKS, arm.asm_reason,
-         features=frozenset({BOUNDARIES}), is_padding=arm.thumb_is_padding),
+         features=frozenset({BOUNDARIES}), is_padding=arm.thumb_is_padding, ends_with_return=arm.thumb_ends_with_return),
 ]
 _BY_ID = {a.id: a for a in ARCHES}
 UNKNOWN = Arch("", "an unknown processor", {})

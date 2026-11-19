@@ -1,5 +1,4 @@
-"""What agents learn about a game (app/knowledge.py): it reaches every agent only once two different models agree,
-and the user accepts it unless the project adds agreed knowledge by itself. Compiler guesses aren't knowledge."""
+"""A shared finding needs an app check or independent confirmation."""
 
 import json
 
@@ -30,19 +29,25 @@ def test_two_sessions_of_one_model_are_one_opinion_two_models_are_two(net):
     kid = int(said.split("#")[1].split(".")[0])
     assert "needs a helper running a model other than" in net.knowledge.share(opus2, "game", supports=kid)
     assert net.knowledge.listing("game")["items"][0]["status"] == "proposed"
-    assert "the user decides now" in net.knowledge.share(gpt, "game", supports=kid)
+    assert "every agent gets it" in net.knowledge.share(gpt, "game", supports=kid)
     assert net.knowledge.listing("game")["items"][0]["models"] == ["claude-opus-5.5", "opencode-gpt-6.1"]
-    assert "CPed" not in net.knowledge.for_prompt("game")  # agreed, not accepted yet
-    net.knowledge.decide("game", kid, accept=True)
     assert "CPed" in net.knowledge.for_prompt("game") and "CPed" not in net.knowledge.for_prompt("other")
 
 
-def test_a_project_can_take_what_two_models_agree_on_by_itself(net):
-    net.knowledge.set_auto("game", True)
+def test_two_models_share_a_finding_even_with_the_old_setting_off(net):
+    net._update_cfg("game", lambda cfg: cfg.update(knowledge_auto=False))
     a, b = agent(net, "claude-opus-5.5-1"), agent(net, "agy-gemini-3.8-flash-1")
     kid = int(net.knowledge.share(a, "game", "Strings are Shift-JIS").split("#")[1].split(".")[0])
     assert "every agent gets it" in net.knowledge.share(b, "game", supports=kid)
     assert "Shift-JIS" in net.knowledge.for_prompt("game")
+
+
+def test_room_labels_and_external_connections_are_not_model_evidence(net):
+    local, _ = net.local_agent("manual-external-1")
+    remote = net.authenticate(net.register_agent("guest.some-other-model", "guest", origin="collab:game"))
+    kid = int(net.knowledge.share(local, "game", "Strings are Shift-JIS").split("#")[1].split(".")[0])
+    assert "needs a helper running a model other than" in net.knowledge.share(remote, "game", supports=kid)
+    assert net.knowledge.listing("game")["items"][0]["status"] == "proposed"
 
 
 def test_the_same_idea_again_is_pointed_at_the_open_proposal(net):
@@ -63,19 +68,23 @@ def test_proposals_waiting_for_a_second_model_are_offered_to_agents(net):
     assert "waiting for a second model" in text and "menu screen" in text
 
 
-def test_the_user_can_be_the_second_opinion(net):
-    """On an x86 game worked by one model only, 55 proposals waited for a second model that never came: the user
-    gives a checked one to agents (the panel offers it on proposals too), or rejects it."""
-    opus = agent(net, "claude-opus-5.5-1")
-    said = net.knowledge.share(opus, "game", "Matrix products are copied back through a named temporary")
-    assert "once the user gives it to agents" in said
-    kid = int(said.split("#")[1].split(".")[0])
-    other = int(net.knowledge.share(opus, "game", "Screens set up the fader before Init").split("#")[1].split(".")[0])
-    net.knowledge.decide("game", kid, accept=True)
-    net.knowledge.decide("game", other, accept=False)
-    text = net.knowledge.for_prompt("game")
-    assert "named temporary" in text and "checked by the user" in text and "fader" not in text
-    assert [it["id"] for it in net.knowledge.listing("game")["items"]] == [kid]
+def test_the_project_can_verify_a_reference_without_sharing_unchecked_text(net):
+    who = agent(net, "claude-opus-5.5-1")
+    pid = net.project_row("game")["id"]
+    with net.store.tx() as db:
+        db.execute("INSERT INTO functions(project_id,name,size,vram,relocs) VALUES(?,?,?,?,?)",
+                   (pid, "init", 16, 0x120000, "[[4,4,1048576]]"))
+        db.execute("INSERT INTO symbols(project_id,name,address,kind) VALUES(?,?,?,?)",
+                   (pid, "setup_screen", 0x100000, "func"))
+    assert "no reference" in tools.call(net, who, "game", "share_knowledge", {"function": "init", "reference": "0x42"})
+    args = {"function": "init", "reference": "setup_screen"}
+    assert "Give just function and reference" in tools.call(net, who, "game", "share_knowledge",
+                                                            args | {"text": "An unchecked claim."})
+    assert tools.call(net, who, "game", "share_knowledge", args).startswith("Verified and shared")
+    assert "init references setup_screen" in net.knowledge.for_prompt("game")
+    assert "init references setup_screen" not in net.knowledge.for_prompt("other")
+    assert "already shared" in tools.call(net, who, "game", "share_knowledge", args)
+    assert len(net.knowledge.listing("game")["items"]) == 1
 
 
 def test_add_note_without_a_function_is_an_error_not_knowledge(net):

@@ -303,7 +303,7 @@ class FileCompilers:
         self.net._update_cfg(slug, change)
         s = found[0]
         if not spans:
-            return "Suggested: the user sees it on the project page and can apply it."
+            return "Suggestion recorded. Give a function or address range so the app can test the files."
         origin = self._file_of(slug, spans[0][0])
         if function:
             origin = self.net.forks._meta(self.net.forks._fn(slug, function)).get("source") or origin
@@ -500,8 +500,7 @@ class FileCompilers:
                                   fn["name"])
                 return self._wait(slug, c, f"waiting: {fn['name']} in {source} is next (first in line for an agent)")
         c["status"] = "waiting"
-        self._save(slug, c, "waiting: no neighbouring file settled it yet; the user decides, or an agent's "
-                            "try_compiler does")
+        self._save(slug, c, "waiting for another compiler test on a nearby file")
 
     def task_text(self, c: dict, name: str, source: str) -> str:
         compiler = consoles.compiler_name(c["toolchain"])
@@ -520,7 +519,7 @@ class FileCompilers:
             resolve = None
             if self.net.auto_adjusts(proj):
                 try:
-                    text += f" ({self.net.forks.set_compiler_ranges(slug, [[start, end]], c['toolchain'])})"
+                    text += f" ({self.net.forks.set_compiler_ranges(slug, [[start, end]], c['toolchain'], exact_only=True)})"
                     resolve = "applied"
                 except NetworkError as e:
                     text += f" (not applied: {e})"

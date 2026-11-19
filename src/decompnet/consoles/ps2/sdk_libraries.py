@@ -155,20 +155,23 @@ def compare(indexes: list[LibraryIndex], code: bytes, relocs: list, resolve, gp:
     for fn, fingerprint in candidates.items():
         supported = {(ref.offset, ref.type) for ref in fn.refs}
         layout_ok = not fn.unsupported and supported == target_refs.keys()
-        resolved = 0
+        references = []
         for ref in fn.refs:
             actual = target_refs.get((ref.offset, ref.type))
             expected = resolve(ref.symbol) if ref.symbol else None
             # With a REL addend in the instruction, this simple comparison cannot distinguish base and addend.
-            if expected is None or expected != actual or ref.addend:
+            if actual is None or not ref.symbol or ref.addend:
                 continue
             mask = MASKS_BY_ARCH.get(("mips", ref.type), (0, 4, 0xFFFFFFFF))[2]
-            linked = expected - gp if ref.type == R_MIPS_GPREL16 else expected
+            linked = actual - gp if ref.type == R_MIPS_GPREL16 else actual
             field = int.from_bytes(code[ref.offset:ref.offset + 4], "little") & mask
-            resolved += field == encode(ref.type, linked) & mask
+            if field == encode(ref.type, linked) & mask:
+                references.append((ref.symbol, actual, expected == actual))
+        resolved = sum(known for _, _, known in references)
         out.append({"name": fn.name, "sdk": fingerprint, "archive": fn.archive, "archive_hash": fn.archive_hash,
                     "member": fn.member, "member_offset": fn.member_offset, "extent": len(code),
                     "relocations": len(fn.refs), "resolved_relocations": resolved, "layout_agrees": layout_ok,
+                    "references": references,
                     "bulk_evidence": len(candidates) == 1 and len(code) >= MIN_REVIEW_WORDS * 4
                     and layout_ok and 0 < resolved == len(fn.refs)})
     return out

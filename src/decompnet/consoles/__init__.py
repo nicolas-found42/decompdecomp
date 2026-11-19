@@ -596,6 +596,15 @@ class Console:
         hook = arch.get(self.target_arch(fn) if fn is not None else self.arch).ends_in_delay_branch
         return bool(hook and hook(code, self.big_endian))
 
+    def ends_with_return(self, code: bytes, fn) -> bool:
+        """Check for a return with the reader for this function's instruction set."""
+        hook = arch.get(self.target_arch(fn)).ends_with_return
+        return bool(hook and hook(code, self.big_endian))
+
+    def branch_targets(self, code: bytes, fn):
+        """The direct branch and call targets of these instructions."""
+        return arch.get(self.target_arch(fn)).branch_targets(code, fn["vram"], self.big_endian, self.cpu_variant)
+
     def up_front_guide(self, compiler: str) -> str:
         """The guide every helper gets before its first claim: on matching `compiler`'s code ("" for none)."""
         return self.compiler_guide

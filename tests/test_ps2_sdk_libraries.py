@@ -12,8 +12,8 @@ from decompnet.consoles.ps2 import library_lookup, sdk_libraries
 from decompnet.network import NetworkError
 
 
-def object_file(name, code, relocation=4):
-    strings = b"\0" + name.encode() + b"\0callee\0"
+def object_file(name, code, relocation=4, callee="callee"):
+    strings = b"\0" + name.encode() + b"\0" + callee.encode() + b"\0"
     symbols = (bytes(16) + struct.pack("<IIIBBH", 1, 0, len(code), 0x12, 0, 1)
                + struct.pack("<IIIBBH", len(name) + 2, 0, 0, 0x10, 0, 0))
     names = b"\0.text\0.strtab\0.symtab\0.rel.text\0.shstrtab\0"
@@ -165,7 +165,8 @@ def test_lookup_keeps_overlay_twins_distinct_and_owner_decisions_survive_save(tm
     decisions = library_lookup.reviews(net, project)
     assert decisions[hit["id"]]["decision"] == "approved"
     assert decisions[alternative["id"]]["decision"] == "dismissed"
-    assert "otherRoutine" not in library_lookup.render(report, second["function_id"], decisions)
+    assert "dismissed" in library_lookup.render(report, second["function_id"], decisions)
+    assert "otherRoutine" not in library_lookup.render(report, None, decisions)
     rows = saves._function_rows(net, pid, sources=False)
     manifest, _, _ = saves._manifest_from_rows(net, project, net.cfg(project), rows, tmp_path)
     assert manifest["sdk_library_reviews"] == decisions
@@ -178,7 +179,7 @@ def test_lookup_keeps_overlay_twins_distinct_and_owner_decisions_survive_save(tm
     evidence, = latest["hits"][1]["evidence"]
     assert evidence["sdk"] != alternative["sdk"]
     assert evidence["id"] == alternative["id"]
-    assert "otherRoutine" not in library_lookup.render(latest, second["function_id"], decisions)
+    assert "dismissed" in library_lookup.render(latest, second["function_id"], decisions)
     archive = libs / "libsample.a"
     archive.write_bytes(archive.read_bytes() + member("marker/", b"changed"))
     latest = library_lookup.scan(net, net.project_row("example"), log=lambda _: None)
@@ -210,3 +211,68 @@ def test_bulk_review_applies_two_clear_names_together(tmp_path, monkeypatch):
     library_lookup.decide(net, project, owner, [item["id"] for item in candidates], True, log=lambda _: None)
     assert [(row["name"], row["vram"]) for row in net.store.all("SELECT name,vram FROM functions ORDER BY vram")] == [
         ("first", 0x120000), ("second", 0x120020)]
+
+
+@pytest.mark.parametrize("shared_callee", [True, False])
+def test_a_helper_can_apply_and_correct_a_name_with_a_checked_reference(tmp_path, monkeypatch, shared_callee):
+    libs = tmp_path / "sdk"
+    libs.mkdir()
+    second_callee = "callee" if shared_callee else "another_callee"
+    caller_code = CODE[:8] + b"\x03" + CODE[9:]
+    (libs / "test.a").write_bytes(sdk_libraries.AR_MAGIC + member("first.o/", object_file("first", CODE))
+                                  + member("second.o/", object_file("second", CODE, callee=second_callee))
+                                  + member("caller.o/", object_file("known_caller", caller_code, callee="second")))
+    monkeypatch.setattr(library_lookup, "_copies", lambda: {"local": libs})
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    cfg = {"kind": "rom", "platform": "ps2", "rom": {"file": "game.rom"}, library_lookup.SETTINGS_KEY: ["local"]}
+    addr = 0x120000
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,root,config) VALUES('example','Example',?,?)",
+                         (str(tmp_path), json.dumps(cfg))).lastrowid
+        db.execute("INSERT INTO context_versions(project_id,version,header) VALUES(?,1,'')", (pid,))
+        db.execute("INSERT INTO functions(project_id,name,vram,rom_offset,size,n_insns,target,relocs) "
+                   "VALUES(?,?,?,?,32,8,?,'[[4,4,1048576]]')", (pid, "anonymous", addr, 0, RELOCATED))
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,0x100000,4,'func')",
+                   (pid, "callee"))
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,32,'func')",
+                   (pid, "anonymous", addr))
+    agent, _ = net.local_agent("reviewer")
+    project = net.project_row("example")
+    hit, = library_lookup.scan(net, project, log=lambda _: None)["hits"]
+    ids = {item["name"]: item["id"] for item in hit["evidence"]}
+    assert len(ids) == 2
+
+    def review(name, decision="apply", witness=""):
+        return tools.call(net, agent, "example", "review_sdk_name", {
+            "candidate": ids[name], "decision": decision, "reason": f"Checked {name} against the linked callee.",
+            "witness": witness,
+        })
+
+    assert "Give a confirmed caller" in review("first")
+    assert "no verified reference" in review("first", witness="0x100004")
+    assert "Dismissed" in review("second", decision="dismiss")
+    assert "no verified reference" in review("second", witness="0x100000")
+    if shared_callee:
+        assert "no verified reference" in review("first", witness="0x100000")
+        assert net._function("anonymous", "example")["vram"] == addr
+        return
+    assert review("first", witness="0x100000").startswith("✅")
+    linked_caller = caller_code[:4] + (0x0C000000 | (addr >> 2)).to_bytes(4, "little") + caller_code[8:]
+    with net.store.tx() as db:
+        db.execute("INSERT INTO functions(project_id,name,vram,rom_offset,size,n_insns,target,relocs) "
+                   "VALUES(?,'known_caller',0x130000,32,32,8,?,?)", (pid, linked_caller, json.dumps([[4, 4, addr]])))
+    with monkeypatch.context() as failing:
+        failing.setattr(net, "regression_test", lambda *a, **k: [("old_match", "no longer matches")])
+        assert "renaming breaks" in review("second", witness="0x130000")
+        assert net._function("first", "example")["vram"] == addr
+    assert review("second", witness="0x130000").startswith("✅")
+    assert net._function("second", "example")["vram"] == addr
+    result = library_lookup.save_reviews(net.cfg(net.project_row("example")))
+    assert result[ids["first"]]["decision"] == "approved"
+    assert result[ids["second"]]["original_name"] == "first"
+    assert result[ids["second"]]["by"] == agent.name and result[ids["second"]]["witness"] == 0x130000
+    assert "references" not in result[ids["second"]]["evidence"]
+    assert result[ids["second"]]["history"][0]["decision"] == "dismissed"
+    net._update_cfg("example", lambda settings: settings.pop(library_lookup.REVIEWS_KEY))
+    library_lookup.restore_reviews(net, project, result)
+    assert library_lookup.reviews(net, net.project_row("example")) == result

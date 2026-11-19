@@ -64,9 +64,8 @@ def test_saved_project_dialog_preserves_state_and_cancels_pending_requests():
                    capture_output=True, text=True, encoding='utf-8', timeout=GUI_TIMEOUT_SECONDS)
 
 
-def test_a_removed_compiler_range_can_be_reverted_where_it_was_listed():
-    """The Remove button left no way back; the part stays greyed in the list with a Revert that adds the same range,
-    compiler and flags again, and says the functions it reopened stay open for agents."""
+def test_compiler_and_sdk_decisions_are_read_only_in_the_desktop():
+    """The desktop explains checked decisions, without prompting the user to apply them."""
     if NODE is None:
         pytest.skip("needs node to run the GUI's scripts")
     subprocess.run([NODE, str(Path(__file__).with_name("gui_compiler.js"))], check=True,
@@ -174,16 +173,13 @@ def test_opening_another_project_shows_nothing_from_before(gui):
     new. A project's poll toasts nothing now: news is the notification centre's, which starts where the feed was
     when the window opened, so the 60 old matches never show."""
     assert gui["toasts"] == []
-    assert len(gui["notes"]) == 2  # only the news below
+    assert len(gui["notes"]) == 1  # only the action the owner can take
 
 
-def test_the_notification_centre_tells_each_projects_news_in_one_line_per_burst(gui):
-    """One feed for the whole app: the project's name, the agent and what happened; 14 matches in a row are one line
-    that counts up ("+13 more matches"), and another project's paused helper is a line of its own."""
-    matches, paused = gui["notes"]
-    assert matches.startswith("Ridge Racer V") and "claude-2 matched func_200" in matches and "+13 more matches" in matches
-    assert paused.startswith("Demo Quest 64") and "claude-1 paused: the provider is out of credit" in paused
-    assert gui["unread"] == 2
+def test_the_notification_centre_only_alerts_when_the_user_can_act(gui):
+    (notice,) = gui["notes"]
+    assert notice.startswith("Demo Quest 64") and "Add provider credit" in notice
+    assert gui["unread"] == 1
 
 
 def test_fork_and_join_say_what_is_wrong_before_anything_starts(gui):

@@ -1,8 +1,9 @@
 # Matching PlayStation 2 code
 
 Use `ps2_decompile(function)` for Ghidra's R5900 pseudocode. Call `ps2_sdk_symbols(function)` when the code looks
-like an SDK routine. It can show local archive members for projects with SDK libraries. Send a promising candidate
-ID to `propose_sdk_name` for the owner to review. Keep the name provisional in your notes until the owner applies it.
+like an SDK routine or its brief lists candidates. Use `review_sdk_name` with the candidate ID to apply a supported
+name or dismiss a candidate ruled out by evidence. Explain your reason. For ambiguous archive evidence, give the
+address of a caller, jump target, or referenced symbol that supports the name. Leave uncertain candidates open.
 `ps2_symbol_transfer(function)` finds counterparts in the project's companion ELF (GT4 uses CORE.elf).
 
 When the owner enables background jobs, use `deep_permuter` for saved C that is close and differs mainly in register

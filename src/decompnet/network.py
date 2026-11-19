@@ -63,7 +63,7 @@ BRIEF_NOTES = 8  # the newest notes on a function its brief shows
 REPEATS_KEPT = 4096  # compile results kept in memory for repeat_of
 # events after which earlier compile results don't stand for a repeat (bump_generation): a header, a source file, a
 # name, the compiler, the project's files changed
-GENERATION_EVENTS = frozenset({"context", "source", "rename", "compiler", "split", "files", "sync", "link", "import",
+GENERATION_EVENTS = frozenset({"context", "source", "rename", "compiler", "split", "boundary", "files", "sync", "link", "import",
                                "fork", "collab"})
 NOTE_CHARS = 4000  # a note longer than this is cut: notes are for findings, not code dumps
 NOTES_FOUND = 20  # search_notes' answer at most

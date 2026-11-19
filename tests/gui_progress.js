@@ -31,7 +31,6 @@ const cases = [
   ["steering", '$("romCheck").onclick = async () => {', '\n    };', "sourceCheckLog", "romCheck"],
   ["steering", '$("forkMeasure").onclick = async () => {', '\n    };', "sourceCheckLog", "forkMeasure"],
   ["steering", 'async function exportNow() {', '\n}\n', "expLog", "srcExport"],
-  ["steering", '$("setTcSave").onclick = async () => {', '\n};', "setTcLog", "setTcSave"],
   ["agents", 'if (inst) inst.onclick = async () => {', '\n  };', "log", "inst"],
   ["pages", 'b.onclick = async () => {', '\n    };', "log", "b"],
   ["sdk-libraries", 'async function runSdkLibraryAction(action, extras = {}) {', '\n}\n', "sdkLibraryLog", "sdkLibraryScan"],
@@ -225,11 +224,6 @@ async function main() {
   copyTest.ctx.showJobError(copyTest.log, "");
   assert.equal(toolbar.hidden, true);
   assert.equal(copyTest.log.textContent, "");
-  // A range-only compiler setting remains immediate and has no progress bar.
-  const range = setup(...cases[10], "0x1000-0x2000");
-  const running = range.ctx.run();
-  assert.equal(range.log.bar, undefined);
-  range.start.resolve({}); await running;
   // Closing/replacing a dialog cannot make cleanup re-enable a different dialog's button.
   const test = setup(...cases[4]);
   const runningJoin = test.ctx.run(), replacement = element();

@@ -183,6 +183,7 @@ function noteHtml(g) {
     analysis: () => `Game analysed again: ${esc(d)}`,
     files: () => `${who} gave code without a source file one: ${esc(d)}`,
     paused: () => `${who} paused: ${esc(d)}`,
+    "needs-setup": () => `${who} needs setup. ${esc(d)}`,
     stopped: () => `${who} stopped: ${esc(d)}`,
   }[g.kind] || (() => `${who} ${esc(g.kind)} ${esc(d)}`);
   if (g.summary) return `Autopilot: ${esc(g.summary.detail)}`;
@@ -236,7 +237,7 @@ async function pollEvents() {
     if (first || !r.events.length) return;
     for (const ev of r.events) N.history.set(ev.id, ev);
     trimHistory();
-    showNews(r.events);
+    showNews(r.events.filter(event => event.kind === "needs-setup"));
     if (!$("notifPanel").hidden) renderNotes();
   } catch { /* the app is restarting: the next poll carries on where this one stopped */ } finally { N.polling = false; }
 }

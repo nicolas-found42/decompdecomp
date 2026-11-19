@@ -245,11 +245,7 @@ def register(app: App) -> None:
             lookup.select(net, slug, data.get("copies"))
         if action in ("select", "scan"):
             return {"job": lookup.start_scan(net, net.project_row(slug))}
-        if action in ("approve", "dismiss"):
-            return {"job": net.project_jobs.submit(slug, "Review SDK library names", lambda log: lookup.decide(
-                net, net.project_row(slug), net.local_agent("you")[0], data.get("ids"), action == "approve", log),
-                key=json.dumps([action, data.get("ids")]))}
-        raise NetworkError("Choose an SDK scan or a name review action.")
+        raise NetworkError("Choose Save and scan or Scan again. Agents review the names.")
 
     def p_verify_assembly(slug, request, data):
         return {"job": net.project_jobs.verify_assembly(slug)}
@@ -324,14 +320,6 @@ def register(app: App) -> None:
             raise ValueError("write the note first")
         return {"message": net.add_note(agent, slug, text[:2000], str(data.get("function", "")) or None)}
 
-    def p_suggestion(slug, request, data):
-        net.resolve_suggestion(slug, int(data.get("id", 0)), data.get("action") == "apply")
-        return net.overview(slug)
-
-    def p_boundary(slug, request, data):
-        net.resolve_boundary(slug, int(data.get("id", 0)), data.get("action") == "apply")
-        return net.overview(slug)
-
     def p_autopilot(slug, request, data):
         if data.get("action") == "stop":
             net.stop_autopilot(slug)
@@ -353,18 +341,12 @@ def register(app: App) -> None:
         return saves.save(net, slug, hostenv.local_path(data["folder"]) if data.get("folder") else None)
 
     def p_knowledge(slug, request, data):
-        """What agents learned: GET lists it; POST accepts or rejects one ({id, accept}), or sets whether agreed
-        knowledge is added by itself ({auto})."""
-        if request.method == "POST":
-            if "auto" in data:
-                net.knowledge.set_auto(slug, bool(data["auto"]))
-            else:
-                net.knowledge.decide(slug, int(data.get("id") or 0), bool(data.get("accept")))
-        return net.knowledge.listing(slug)
+        """Show the findings agents are checking or sharing."""
+        return net.knowledge.listing(slug) | {"decisions": net.decision_history(slug)}
 
     routes = {
         "/api/project": (p_overview, ["GET"]),
-        "/api/knowledge": (p_knowledge, ["GET", "POST"]),
+        "/api/knowledge": (p_knowledge, ["GET"]),
         "/api/modelcosts": (lambda s, r, d: manager.costs(s), ["GET"]),
         "/api/save": (p_save, ["POST"]),
         "/api/live": (p_live, ["GET"]),
@@ -387,7 +369,6 @@ def register(app: App) -> None:
         "/api/claim-order": (p_claim_order, ["POST"]),
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]), "/api/scope": (p_scope, ["POST"]),
         "/api/unanalysed": (p_unanalysed, ["POST"]),
-        "/api/suggestion": (p_suggestion, ["POST"]), "/api/boundary": (p_boundary, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
         "/api/compilermap": (p_compilermap, ["GET", "POST"]),
     }
